@@ -8,6 +8,7 @@ dependencies = [
     "matplotlib==3.10.8",
     "protobuf==6.33.2",
     "pymongo>=4.16.0",
+    "python-dateutil>=2.9.0.post0",
     "seaborn==0.13.2",
     "sentencepiece==0.2.1",
     "torch==2.9.1",
