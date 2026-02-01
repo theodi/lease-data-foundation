@@ -666,6 +666,136 @@ class TestParseLeaseTerm(unittest.TestCase):
         self.assertEqual(result['expiry_date'], datetime(2123, 12, 3))
         self.assertEqual(result['tenure_years'], 99)
 
+    # --- New test cases for additional patterns and normalizations ---
+    def test_years_commencing_on_ordinal_of_month(self):
+        """Test: '999 years commencing on 1st of January 2013'"""
+        result = parse_lease_term("999 years commencing on 1st of January 2013")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(2013, 1, 1))
+        self.assertEqual(result['expiry_date'], datetime(3012, 1, 1))
+        self.assertEqual(result['tenure_years'], 999)
+
+    def test_residue_of_years(self):
+        """Test: 'Residue of 999 years from 26 March 1997'"""
+        result = parse_lease_term("Residue of 999 years from 26 March 1997")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(1997, 3, 26))
+        self.assertEqual(result['expiry_date'], datetime(2996, 3, 26))
+        self.assertEqual(result['tenure_years'], 999)
+
+    def test_beginning_including_on_duplicate(self):
+        """Test: 'Beginning on and including on 11 September 2022 and ending on and including 10 September 2032'"""
+        result = parse_lease_term("Beginning on and including on 11 September 2022 and ending on and including 10 September 2032")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(2022, 9, 11))
+        self.assertEqual(result['expiry_date'], datetime(2032, 9, 10))
+        self.assertEqual(result['tenure_years'], 9)
+
+    def test_date_until_date(self):
+        """Test: '5 June 2002 until 31 December 3001'"""
+        result = parse_lease_term("5 June 2002 until 31 December 3001")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(2002, 6, 5))
+        self.assertEqual(result['expiry_date'], datetime(3001, 12, 31))
+        self.assertEqual(result['tenure_years'], 999)
+
+    def test_from_colon_to_colon(self):
+        """Test: 'From: 3 May 1974  To: 31 December 2070'"""
+        result = parse_lease_term("From: 3 May 1974  To: 31 December 2070")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(1974, 5, 3))
+        self.assertEqual(result['expiry_date'], datetime(2070, 12, 31))
+        self.assertEqual(result['tenure_years'], 96)
+
+    def test_from_date_for_term_of_years(self):
+        """Test: 'From 25 May 1988 for a term of 212 years'"""
+        result = parse_lease_term("From 25 May 1988 for a term of 212 years")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(1988, 5, 25))
+        self.assertEqual(result['expiry_date'], datetime(2200, 5, 25))
+        self.assertEqual(result['tenure_years'], 212)
+
+    def test_years_from_colon_date(self):
+        """Test: '199 years from 12:7:1973'"""
+        result = parse_lease_term("199 years from 12:7:1973")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(1973, 7, 12))
+        self.assertEqual(result['expiry_date'], datetime(2172, 7, 12))
+        self.assertEqual(result['tenure_years'], 199)
+
+    def test_years_to_and_including(self):
+        """Test: '15 years to and including 9 December 2039'"""
+        result = parse_lease_term("15 years to and including 9 December 2039")
+
+        self.assertIsNotNone(result)
+        # Start date calculated by subtracting 15 years from expiry
+        self.assertEqual(result['start_date'], datetime(2024, 12, 9))
+        self.assertEqual(result['expiry_date'], datetime(2039, 12, 9))
+        self.assertEqual(result['tenure_years'], 15)
+
+    def test_from_to_and_expiring(self):
+        """Test: 'From 10 September 2024 to and expiring on 25 September 2934'"""
+        result = parse_lease_term("From 10 September 2024 to and expiring on 25 September 2934")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(2024, 9, 10))
+        self.assertEqual(result['expiry_date'], datetime(2934, 9, 25))
+        self.assertEqual(result['tenure_years'], 910)
+
+    def test_commences_expires_thereafter(self):
+        """Test: 'Commences on 28 July 2024 and expires 50 years thereafter'"""
+        result = parse_lease_term("Commences on 28 July 2024 and expires 50 years thereafter")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(2024, 7, 28))
+        self.assertEqual(result['expiry_date'], datetime(2074, 7, 28))
+        self.assertEqual(result['tenure_years'], 50)
+
+    def test_from_an_including_typo(self):
+        """Test: 'From an including 23 May 2024 to and including 22 May 2039'"""
+        result = parse_lease_term("From an including 23 May 2024 to and including 22 May 2039")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(2024, 5, 23))
+        self.assertEqual(result['expiry_date'], datetime(2039, 5, 22))
+        self.assertEqual(result['tenure_years'], 14)
+
+    def test_years_and_months_from(self):
+        """Test: '31 years and 6 months from 28 March 2024'"""
+        result = parse_lease_term("31 years and 6 months from 28 March 2024")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(2024, 3, 28))
+        # 31 years and 6 months from start
+        self.assertEqual(result['expiry_date'], datetime(2055, 9, 28))
+        self.assertEqual(result['tenure_years'], 31)
+
+    def test_years_beginning_in_and_including(self):
+        """Test: '15 years beginning in, and including 22 December 2020 and ending on, and including 21 December 2037'"""
+        result = parse_lease_term("15 years beginning in, and including 22 December 2020 and ending on, and including 21 December 2037")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(2020, 12, 22))
+        self.assertEqual(result['expiry_date'], datetime(2037, 12, 21))
+        self.assertEqual(result['tenure_years'], 15)
+
+    def test_years_and_months_from_and_including(self):
+        """Test: '20 years and 3 months from and including 9 September 2015'"""
+        result = parse_lease_term("20 years and 3 months from and including 9 September 2015")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(2015, 9, 9))
+        # 20 years and 3 months from start
+        self.assertEqual(result['expiry_date'], datetime(2035, 12, 9))
+        self.assertEqual(result['tenure_years'], 20)
+
 
 class TestParseFractionalYears(unittest.TestCase):
     """Tests for the parse_fractional_years helper function."""

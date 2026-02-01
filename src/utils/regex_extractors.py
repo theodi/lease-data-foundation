@@ -345,9 +345,10 @@ def parse_lease_term(term_str: str) -> Optional[Dict[str, Any]]:
             tenure_years = relativedelta(expiry_date, start_date).years
             return _build_result(start_date, expiry_date, tenure_years)
 
-    # Pattern 2c: "DD Month YYYY to DD Month YYYY" (without "from")
+    # Pattern 2c: "DD Month YYYY to/until DD Month YYYY" (without "from")
+    # Example: "5 June 2002 until 31 December 3001"
     pattern_date_to_date = re.compile(
-        rf'^{DATE_PATTERN}\s+to\s+{DATE_PATTERN}',
+        rf'^{DATE_PATTERN}\s+(?:to|until)\s+{DATE_PATTERN}',
         re.IGNORECASE
     )
 
@@ -565,6 +566,73 @@ def parse_lease_term(term_str: str) -> Optional[Dict[str, Any]]:
             start_date = expiry_date - relativedelta(years=years)
             return _build_result(start_date, expiry_date, years)
 
+    # Pattern 4f: "X years to [and including] DD Month YYYY" (years with expiry only)
+    # Example: "15 years to and including 9 December 2039"
+    pattern_years_to_date = re.compile(
+        rf'^(?:a\s+term\s+of\s+)?{YEARS_NUM}\s*years?\s+'
+        rf'to\s+{AND_INCLUDING}{DATE_PATTERN}',
+        re.IGNORECASE
+    )
+
+    match = pattern_years_to_date.search(term_str)
+    if match:
+        years = parse_word_number(match.group(1))
+        expiry_date = parse_date(match.group(2), match.group(3), match.group(4))
+        if years and expiry_date:
+            # Calculate start date by subtracting years from expiry
+            start_date = expiry_date - relativedelta(years=years)
+            return _build_result(start_date, expiry_date, years)
+
+    # Pattern 4g: "From DD Month YYYY for a term of X years"
+    # Example: "From 25 May 1988 for a term of 212 years"
+    pattern_from_date_for_term = re.compile(
+        rf'from\s+{AND_INCLUDING}{DATE_PATTERN}\s+'
+        rf'for\s+(?:a\s+term\s+of\s+)?{YEARS_NUM}\s*years?',
+        re.IGNORECASE
+    )
+
+    match = pattern_from_date_for_term.search(term_str)
+    if match:
+        start_date = parse_date(match.group(1), match.group(2), match.group(3))
+        years = parse_word_number(match.group(4))
+        if start_date and years:
+            expiry_date = _calculate_expiry(start_date, years)
+            return _build_result(start_date, expiry_date, years)
+
+    # Pattern 4h: "commencing on DD Month YYYY and expiring X years thereafter"
+    # Example: "Commences on 28 July 2024 and expires 50 years thereafter"
+    pattern_date_years_thereafter = re.compile(
+        rf'{START_KEYWORD}\s+{ON}{AND_INCLUDING}{DATE_PATTERN}\s+'
+        rf'and\s+(?:expiring|expiry)\s+{YEARS_NUM}\s*years?\s+thereafter',
+        re.IGNORECASE
+    )
+
+    match = pattern_date_years_thereafter.search(term_str)
+    if match:
+        start_date = parse_date(match.group(1), match.group(2), match.group(3))
+        years = parse_word_number(match.group(4))
+        if start_date and years:
+            expiry_date = _calculate_expiry(start_date, years)
+            return _build_result(start_date, expiry_date, years)
+
+    # Pattern 4i: "X years and Y months from [and including] DD Month YYYY"
+    # Examples: "31 years and 6 months from 28 March 2024", "20 years and 3 months from and including 9 September 2015"
+    pattern_years_and_months = re.compile(
+        rf'^(?:a\s+term\s+of\s+)?{YEARS_NUM}\s*years?\s+'
+        rf'and\s+{MONTHS_WORD}\s+months?\s+'
+        rf'{START_PREFIX}{THE}?{DATE_PATTERN}',
+        re.IGNORECASE
+    )
+
+    match = pattern_years_and_months.search(term_str)
+    if match:
+        years = parse_word_number(match.group(1))
+        months = parse_word_number(match.group(2))
+        start_date = parse_date(match.group(3), match.group(4), match.group(5))
+        if years and start_date and months is not None:
+            expiry_date = start_date + relativedelta(years=years, months=months)
+            return _build_result(start_date, expiry_date, years)
+
     # ========================================================================
     # PATTERN GROUP 5: Fallback patterns (missing keywords)
     # ========================================================================
@@ -620,11 +688,44 @@ def normalise_term_str(term_str: str) -> str:
     """
     term_str = re.sub(r'[\s\u00A0]+', ' ', term_str.strip())
 
-    # Remove problematic special characters
+    # Remove problematic special characters (but keep colons for date formats like 12:7:1973)
     term_str = term_str.replace('´', '').replace('~', '').replace('¨', '').replace(',', '')
+
+    # Remove "Residue of" prefix
+    term_str = re.sub(r'^Residue\s+of\s+', '', term_str, flags=re.IGNORECASE)
+
+    # Remove "midnight on" phrases
+    term_str = term_str.replace(" midnight on", " ")
 
     # Remove ordinal suffixes from dates (1st -> 1, 2nd -> 2, etc.)
     term_str = re.sub(r'\b(\d{1,2})(?:st|nd|rd|th)\b', r'\1', term_str, flags=re.IGNORECASE)
+
+    # Remove "of" between day and month (e.g., "1 of January" -> "1 January")
+    term_str = re.sub(r'\b(\d{1,2})\s+of\s+([A-Za-z]+)\b', r'\1 \2', term_str, flags=re.IGNORECASE)
+
+    # Fix "including on" -> "including" (duplicate "on")
+    term_str = re.sub(r'\bincluding\s+on\b', 'including', term_str, flags=re.IGNORECASE)
+
+    # Fix "to and expiring" -> "to" or "expiring" (redundant)
+    term_str = re.sub(r'\bto\s+and\s+expiring\b', 'expiring', term_str, flags=re.IGNORECASE)
+
+    # Fix "an including" -> "and including" (typo)
+    term_str = re.sub(r'\ban\s+including\b', 'and including', term_str, flags=re.IGNORECASE)
+
+    # Fix "beginning in," -> "beginning on" (typo)
+    term_str = re.sub(r'\bbeginning\s+in\b', 'beginning on', term_str, flags=re.IGNORECASE)
+
+    # Fix "ending on," -> "ending on" (extra comma already removed above)
+    # Fix "Commences" -> "commencing", "expires" -> "expiring"
+    term_str = re.sub(r'\bCommences\b', 'commencing', term_str, flags=re.IGNORECASE)
+    term_str = re.sub(r'\bexpires\b', 'expiring', term_str, flags=re.IGNORECASE)
+
+    # Remove colons after From/To (e.g., "From:" -> "From", "To:" -> "to")
+    term_str = re.sub(r'\bFrom\s*:', 'From', term_str, flags=re.IGNORECASE)
+    term_str = re.sub(r'\bTo\s*:', 'to', term_str, flags=re.IGNORECASE)
+
+    # Convert colon date separators to dots (e.g., "12:7:1973" -> "12.7.1973")
+    term_str = re.sub(r'\b(\d{1,2}):(\d{1,2}):(\d{4})\b', r'\1.\2.\3', term_str)
 
     # Fix common spelling errors
     term_str = re.sub(r'\bles\b', 'less', term_str, flags=re.IGNORECASE)

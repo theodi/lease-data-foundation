@@ -62,7 +62,7 @@ def main():
     print("Fetching records with regex_is_valid = False...")
     print()
 
-    records = get_invalid_regex_records(start=195020, offset=100)
+    records = get_invalid_regex_records(start=130020, offset=100)
 
     print(f"Found {len(records)} record(s):")
     print("-" * 60)
