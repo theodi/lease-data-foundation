@@ -1,0 +1,124 @@
+Total processed:    7,713,991
+Valid extractions:  6,896,958 (89.4%)
+Invalid/failed:     817,033 (10.6%)
+Errors:             1,232
+Time elapsed:       267.73 seconds
+Processing rate:    28813 docs/second
+
+
+Total processed:    817,033
+Valid extractions:  47,266 (5.8%)
+Invalid/failed:     769,767 (94.2%)
+Errors:             1,232
+Time elapsed:       22.12 seconds
+Processing rate:    36941 docs/second
+
+
+Total processed:    726,914
+Valid extractions:  33,066 (4.5%)
+Invalid/failed:     693,848 (95.5%)
+Errors:             1,317
+Time elapsed:       23.34 seconds
+Processing rate:    31139 docs/second
+
+
+Total processed:    696,010
+Valid extractions:  100,958 (14.5%)
+Invalid/failed:     595,052 (85.5%)
+Errors:             1,326
+Time elapsed:       30.71 seconds
+Processing rate:    22667 docs/second
+
+
+Total processed:    595,050
+Valid extractions:  188,150 (31.6%)
+Invalid/failed:     406,900 (68.4%)
+Errors:             1,328
+Time elapsed:       32.27 seconds
+Processing rate:    18437 docs/second
+
+
+Total processed:    406,900
+Valid extractions:  47,345 (11.6%)
+Invalid/failed:     359,555 (88.4%)
+Errors:             1,328
+Time elapsed:       32.23 seconds
+Processing rate:    12625 docs/second
+
+
+Total processed:    359,550
+Valid extractions:  129,676 (36.1%)
+Invalid/failed:     229,874 (63.9%)
+Errors:             1,333
+Time elapsed:       23.02 seconds
+Processing rate:    15616 docs/second
+
+
+Total processed:    229,866
+Valid extractions:  33,210 (14.4%)
+Invalid/failed:     196,656 (85.6%)
+Errors:             1,341
+Time elapsed:       15.46 seconds
+Processing rate:    14864 docs/second
+
+
+Total processed:    196,656
+Valid extractions:  41,137 (20.9%)
+Invalid/failed:     155,519 (79.1%)
+Errors:             1,341
+Time elapsed:       12.93 seconds
+Processing rate:    15208 docs/second
+
+Total processed:    155,519
+Valid extractions:  46,970 (30.2%)
+Invalid/failed:     108,549 (69.8%)
+Errors:             1,341
+Time elapsed:       13.27 seconds
+Processing rate:    11722 docs/second
+
+999 years from the date of the lease
+999 years
+a term of years expiring on 23 June 2237
+
+Total processed:    94,333
+Valid extractions:  0 (0.0%)
+Invalid/failed:     94,333 (100.0%)
+Errors:             1,350
+Time elapsed:       8.93 seconds
+Processing rate:    10558 docs/second
+
+Total processed:    93,257
+Valid extractions:  13,351 (14.3%)
+Invalid/failed:     79,906 (85.7%)
+Errors:             2,426
+Time elapsed:       10.51 seconds
+Processing rate:    8873 docs/second
+
+
+Total processed:    79,906
+Valid extractions:  7,567 (9.5%)
+Invalid/failed:     72,339 (90.5%)
+Errors:             2,426
+Time elapsed:       9.49 seconds
+Processing rate:    8424 docs/second
+
+
+Total processed:    72,312
+Valid extractions:  4,712 (6.5%)
+Invalid/failed:     67,600 (93.5%)
+Errors:             2,453
+Time elapsed:       9.01 seconds
+Processing rate:    8025 docs/second
+
+
+T5
+Total processed:    65,237
+Valid extractions:  47,438 (72.7%)
+Invalid/failed:     17,799 (27.3%)
+Errors:             3,584
+Time elapsed:       2168.84 seconds (36.1 minutes)
+Processing rate:    30.1 docs/second
+Batch size used:    32
+
+
+

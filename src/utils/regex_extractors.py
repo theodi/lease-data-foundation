@@ -344,7 +344,7 @@ def _build_result(start_date: datetime, expiry_date: datetime, tenure_years) -> 
         'start_date': start_date,
         'expiry_date': expiry_date,
         'tenure_years': tenure_years,
-        'source': 'regex'
+        'extractor': 'regex'
     }
 
 

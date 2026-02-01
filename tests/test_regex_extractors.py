@@ -71,7 +71,7 @@ class TestParseLeaseTerm(unittest.TestCase):
         self.assertEqual(result['start_date'], datetime(1862, 6, 24))
         self.assertEqual(result['expiry_date'], datetime(1961, 6, 24))
         self.assertEqual(result['tenure_years'], 99)
-        self.assertEqual(result['source'], 'regex')
+        self.assertEqual(result['extractor'], 'regex')
 
     def test_years_less_days_from_date(self):
         """Test: '99 years less 3 days from 25 March 1868'"""
@@ -982,7 +982,7 @@ class TestLeaseTermWithDol(unittest.TestCase):
         self.assertEqual(result['start_date'], datetime(1866, 10, 16))
         self.assertEqual(result['expiry_date'], datetime(2865, 10, 16))
         self.assertEqual(result['tenure_years'], 999)
-        self.assertEqual(result['source'], 'regex')
+        self.assertEqual(result['extractor'], 'regex')
 
     def test_years_from_date_of_lease_without_the(self):
         """Test: '125 years from date of lease' with dol"""
@@ -1103,7 +1103,7 @@ class TestLeaseTermWithDol(unittest.TestCase):
         self.assertEqual(result['start_date'], datetime(1879, 11, 12))
         self.assertEqual(result['expiry_date'], datetime(2179, 11, 12))
         self.assertEqual(result['tenure_years'], 300)
-        self.assertEqual(result['source'], 'regex')
+        self.assertEqual(result['extractor'], 'regex')
 
     def test_number_of_years_expiring_on(self):
         """Test: 'A number of years expiring on 31 December 2100' with dol"""
@@ -1147,7 +1147,7 @@ class TestLeaseTermWithDol(unittest.TestCase):
         self.assertEqual(result['expiry_date'], datetime(2088, 8, 31))
         # Rounds up - one day short of 100 years
         self.assertEqual(result['tenure_years'], 100)
-        self.assertEqual(result['source'], 'regex')
+        self.assertEqual(result['extractor'], 'regex')
 
     def test_term_ending_on(self):
         """Test: 'a term ending on 25 December 2150' with dol"""
@@ -1199,7 +1199,7 @@ class TestLeaseTermWithDol(unittest.TestCase):
         self.assertEqual(result['start_date'], datetime(1860, 9, 28))
         self.assertEqual(result['expiry_date'], datetime(2160, 9, 28))
         self.assertEqual(result['tenure_years'], 300)
-        self.assertEqual(result['source'], 'regex')
+        self.assertEqual(result['extractor'], 'regex')
 
     def test_expiring_on_only_without_dol_returns_none(self):
         """Test: 'expiring on 28 September 2160' without dol returns None"""
@@ -1241,7 +1241,7 @@ class TestNewPatterns(unittest.TestCase):
         self.assertEqual(result['start_date'], datetime(2024, 12, 2))
         self.assertEqual(result['expiry_date'], datetime(2114, 12, 2))
         self.assertEqual(result['tenure_years'], 90)
-        self.assertEqual(result['source'], 'regex')
+        self.assertEqual(result['extractor'], 'regex')
 
     def test_years_form_typo(self):
         """Test: '99 years form and including 16 September 2025' (typo 'form' -> 'from')"""
