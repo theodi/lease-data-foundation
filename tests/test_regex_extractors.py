@@ -1588,3 +1588,71 @@ class TestLargeYearsWithComma(unittest.TestCase):
             parse_lease_term("10,000 years from 30 June 1897")
 
 
+class TestAdditionalDolPatterns(unittest.TestCase):
+    """Tests for additional DOL-based patterns."""
+
+    def test_years_commencing_on_date_of_this_lease(self):
+        """Test: '250 years commencing on the date of this lease' with dol"""
+        result = parse_lease_term("250 years commencing on the date of this lease", dol="01-01-1900")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(1900, 1, 1))
+        self.assertEqual(result['expiry_date'], datetime(2150, 1, 1))
+        self.assertEqual(result['tenure_years'], 250)
+
+    def test_years_parenthetical_less_days(self):
+        """Test: '999 (less 10 days)' with dol (parenthetical less days, ignored)"""
+        result = parse_lease_term("999 (less 10 days)", dol="01-01-1900")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(1900, 1, 1))
+        self.assertEqual(result['expiry_date'], datetime(2899, 1, 1))
+        self.assertEqual(result['tenure_years'], 999)
+
+    def test_from_date_hereof_up_to_date(self):
+        """Test: 'from and including the date hereof up to 13 March 2956' with dol"""
+        result = parse_lease_term("from and including the date hereof up to 13 March 2956", dol="01-01-1900")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(1900, 1, 1))
+        self.assertEqual(result['expiry_date'], datetime(2956, 3, 13))
+
+    def test_from_date_of_lease_expiring_on(self):
+        """Test: 'from the date of the lease and expiring on 1 February 3003' with dol"""
+        result = parse_lease_term("from the date of the lease and expiring on 1 February 3003", dol="01-01-1900")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(1900, 1, 1))
+        self.assertEqual(result['expiry_date'], datetime(3003, 2, 1))
+
+    def test_parenthetical_less_days_for_typo(self):
+        """Test: '999 (less 10 days)for 2 September 1973' (typo 'for' -> 'from')"""
+        result = parse_lease_term("999 (less 10 days)for 2 September 1973")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(1973, 9, 2))
+        # After removing parenthetical text, this becomes "999 from 2 September 1973"
+        self.assertEqual(result['expiry_date'], datetime(2972, 9, 2))
+        self.assertEqual(result['tenure_years'], 999)
+
+    def test_expiring_on_expiration_of_years_from(self):
+        """Test: 'From and including 19 June 2012 and expiring on the expiration of 999 years from 15 June 2001'"""
+        result = parse_lease_term("From and including 19 June 2012 and expiring on the expiration of 999 years from 15 June 2001")
+
+        self.assertIsNotNone(result)
+        # Start date is 19 June 2012
+        self.assertEqual(result['start_date'], datetime(2012, 6, 19))
+        # Expiry is 15 June 2001 + 999 years = 15 June 3000
+        self.assertEqual(result['expiry_date'], datetime(3000, 6, 15))
+        self.assertEqual(result['tenure_years'], 999)
+
+    def test_years_without_years_word_parenthetical(self):
+        """Test: '999 (less 10 days)' with dol - number without 'years' keyword"""
+        result = parse_lease_term("999 (less 10 days)", dol="15-06-1950")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(1950, 6, 15))
+        self.assertEqual(result['expiry_date'], datetime(2949, 6, 15))
+        self.assertEqual(result['tenure_years'], 999)
+
+

@@ -122,10 +122,10 @@ Batch size used:    32
 
 regex improve
 
-Total processed:    20,218
-Valid extractions:  2,011 (9.9%)
-Invalid/failed:     18,207 (90.1%)
-Errors:             2,397
-Time elapsed:       4.94 seconds
-Processing rate:    4093 docs/second
+Total processed:    18,206
+Valid extractions:  775 (4.3%)
+Invalid/failed:     17,431 (95.7%)
+Errors:             2,398
+Time elapsed:       4.64 seconds
+Processing rate:    3922 docs/second
 

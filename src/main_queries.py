@@ -42,6 +42,7 @@ def get_invalid_regex_records(
         cursor = collection.find(
             # {"regex_is_valid": False,
             {"t5_is_valid": False,
+             "regex_is_valid": False,
             "term": {"$exists": True, "$ne": ""}}
         ).skip(start).limit(offset)
 

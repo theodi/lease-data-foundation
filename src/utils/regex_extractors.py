@@ -488,6 +488,25 @@ def parse_lease_term(term_str: str, dol: Optional[str] = None) -> Optional[Dict[
             tenure_years = _calculate_tenure_years(start_date, expiry_date)
             return _build_result(start_date, expiry_date, tenure_years)
 
+    # Pattern 2e: "From [and including] DATE and expiring on the expiration of X years from DATE"
+    # Example: "From and including 19 June 2012 and expiring on the expiration of 999 years from 15 June 2001"
+    # Lease start is the first date, expiry is calculated as second date + X years
+    pattern_expiring_on_expiration_of = re.compile(
+        rf'from\s+{OPT_INCLUDING}{DATE_PATTERN}\s+'
+        rf'and\s+expiring\s+on\s+the\s+expiration\s+of\s+{NUM_CAP}\s*{YEARS_WORD}\s+'
+        rf'from\s+{DATE_PATTERN}',
+        re.IGNORECASE
+    )
+
+    match = pattern_expiring_on_expiration_of.search(term_str)
+    if match:
+        start_date = parse_date(match.group(1), match.group(2), match.group(3))
+        years = parse_word_number(match.group(4))
+        base_date = parse_date(match.group(5), match.group(6), match.group(7))
+        if start_date and years and base_date:
+            expiry_date = _calculate_expiry(base_date, years)
+            return _build_result(start_date, expiry_date, years)
+
 
     # ========================================================================
     # PATTERN 3: Years with modifiers (less/plus days/months, fractional) + start date
@@ -759,12 +778,13 @@ def parse_lease_term(term_str: str, dol: Optional[str] = None) -> Optional[Dict[
     dol_date = parse_dol_date(dol) if dol else None
 
     if dol_date:
-        # Pattern 6a: "X years from [the] date [of] [the] lease"
+        # Pattern 6a: "X years from [the] date [of] [this] [the] lease"
         # Examples: "999 years from the date of the lease", "125 years from date of lease",
-        #           "150 years commencing on the date of the lease"
+        #           "150 years commencing on the date of the lease",
+        #           "250 years commencing on the date of this lease"
         pattern_years_from_dol = re.compile(
             rf'^{TERM_PREFIX}{NUM_CAP}\s*{YEARS_WORD}\s+'
-            rf'(?:{START_KW}(?:\s+on)?)\s+{OPT_THE}date\s+(?:of\s+)?{OPT_THE}lease',
+            rf'(?:{START_KW}(?:\s+on)?)\s+{OPT_THE}date\s+(?:of\s+)?(?:this\s+)?{OPT_THE}lease',
             re.IGNORECASE
         )
 
@@ -827,17 +847,32 @@ def parse_lease_term(term_str: str, dol: Optional[str] = None) -> Optional[Dict[
                 tenure_years = _calculate_tenure_years(dol_date, expiry_date)
                 return _build_result(dol_date, expiry_date, tenure_years)
 
-        # Pattern 6d: "X years [less N days]" (just tenure, optional modifier, start from dol)
-        # Example: "999 years less 6 days", "999 years"
+        # Pattern 6d: "X years [less N days]" or "X (less N days)" (just tenure, optional modifier, start from dol)
+        # Examples: "999 years less 6 days", "999 years", "999 (less 10 days)"
         pattern_years_only = re.compile(
-            rf'^{TERM_PREFIX}{NUM_CAP}\s*{YEARS_WORD}'
-            rf'(?:\s+less\s+{NUM_CAP}\s+days?)?$',
+            rf'^{TERM_PREFIX}{NUM_CAP}\s*{YEARS_WORD}?'
+            rf'(?:\s*\(?\s*less\s+{NUM_CAP}\s+days?\s*\)?)?$',
             re.IGNORECASE
         )
 
         match = pattern_years_only.search(term_str)
         if match:
             years = parse_word_number(match.group(1))
+            # Ignore less days per requirement
+            if years:
+                expiry_date = _calculate_expiry(dol_date, years)
+                return _build_result(dol_date, expiry_date, years)
+
+        # Pattern 6d-2: "NNN (less N days)" - specific pattern for number with parenthetical less days
+        # Example: "999 (less 10 days)"
+        pattern_num_paren_less = re.compile(
+            rf'^(\d{{1,4}})\s*\(\s*less\s+(\d+)\s+days?\s*\)$',
+            re.IGNORECASE
+        )
+
+        match = pattern_num_paren_less.search(term_str)
+        if match:
+            years = int(match.group(1))
             # Ignore less days per requirement
             if years:
                 expiry_date = _calculate_expiry(dol_date, years)
@@ -867,6 +902,22 @@ def parse_lease_term(term_str: str, dol: Optional[str] = None) -> Optional[Dict[
         )
 
         match = pattern_beginning_dol_ending.search(term_str)
+        if match:
+            expiry_date = parse_date(match.group(1), match.group(2), match.group(3))
+            if expiry_date:
+                tenure_years = _calculate_tenure_years(dol_date, expiry_date)
+                return _build_result(dol_date, expiry_date, tenure_years)
+
+        # Pattern 6f-2: "from [and including] [the] date [of] [the] lease [up to / and expiring on] DATE"
+        # Examples: "from and including the date hereof up to 13 March 2956",
+        #           "from the date of the lease and expiring on 1 February 3003"
+        pattern_from_dol_to_date = re.compile(
+            rf'from\s+{OPT_INCLUDING}{OPT_THE}date\s+(?:of\s+)?(?:this\s+)?{OPT_THE}lease\s+'
+            rf'(?:up\s+to|{END_PHRASE})\s*{DATE_PATTERN}',
+            re.IGNORECASE
+        )
+
+        match = pattern_from_dol_to_date.search(term_str)
         if match:
             expiry_date = parse_date(match.group(1), match.group(2), match.group(3))
             if expiry_date:
@@ -939,6 +990,7 @@ def normalise_term_str(term_str: str) -> str:
     term_str = term_str.replace(" midnight", "")
     term_str = term_str.replace("and and", "and")
     term_str = term_str.replace("Nine hundred and ninety nine", "999")
+    term_str = term_str.replace("Two hundred and fifty", "250")
     term_str = term_str.replace("¼", "")
     term_str = term_str.replace("½", "")
     term_str = term_str.replace("¾", "")
@@ -995,6 +1047,12 @@ def normalise_term_str(term_str: str) -> str:
     # Fix missing space between "from" and date (e.g., "from1 January" -> "from 1 January")
     term_str = re.sub(r'\bfrom(\d)', r'from \1', term_str, flags=re.IGNORECASE)
 
+    # Fix ")for" typo -> ") from" (e.g., "999 (less 10 days)for" -> "999 (less 10 days) from")
+    term_str = re.sub(r'\)for\b', ') from', term_str, flags=re.IGNORECASE)
+
+    # Fix "date hereof" -> "date of the lease"
+    term_str = re.sub(r'\bdate\s+hereof\b', 'date of the lease', term_str, flags=re.IGNORECASE)
+
     # Fix "including/from" -> "including" (typo with slash)
     term_str = re.sub(r'\bincluding/from\b', 'including', term_str, flags=re.IGNORECASE)
 
@@ -1011,5 +1069,5 @@ def normalise_term_str(term_str: str) -> str:
     term_str = re.sub(r'\s+hereof\s*$', '', term_str, flags=re.IGNORECASE)
     term_str = re.sub(r'\s+thereof\s*$', '', term_str, flags=re.IGNORECASE)
 
-    return term_str
+    return term_str.strip()
 
