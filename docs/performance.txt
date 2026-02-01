@@ -121,6 +121,8 @@ Processing rate:    30.1 docs/second
 Batch size used:    32
 
 regex improve
+start date missing total: 110035 (1.43%)
+term field missing total: 42768 (0.55%)
 
 Total processed:    18,206
 Valid extractions:  775 (4.3%)
