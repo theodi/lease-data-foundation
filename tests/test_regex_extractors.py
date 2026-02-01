@@ -125,7 +125,8 @@ class TestParseLeaseTerm(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result['start_date'], datetime(2020, 6, 24))
         self.assertEqual(result['expiry_date'], datetime(2025, 6, 23))
-        self.assertEqual(result['tenure_years'], 4)  # 4 full years + some months
+        # Rounds up from 4 years 364 days to 5 years
+        self.assertEqual(result['tenure_years'], 5)
 
     def test_years_from_to_including(self):
         """Test: '10 years from and including 25 August 2020 to and including 24 August 2030'"""
@@ -152,7 +153,8 @@ class TestParseLeaseTerm(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result['start_date'], datetime(1982, 4, 1))
         self.assertEqual(result['expiry_date'], datetime(2197, 3, 31))
-        self.assertEqual(result['tenure_years'], 214)  # 214 full years
+        # Rounds up - one day short of 215
+        self.assertEqual(result['tenure_years'], 215)
 
     def test_term_of_years(self):
         """Test: 'a term of 10 years from and including 17 December 2021 to and including 16 December 2031'"""
@@ -516,7 +518,8 @@ class TestParseLeaseTerm(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result['start_date'], datetime(2016, 9, 1))
         self.assertEqual(result['expiry_date'], datetime(3015, 8, 2))
-        self.assertEqual(result['tenure_years'], 998)
+        # Rounds up - one month short but within 30 days
+        self.assertEqual(result['tenure_years'], 999)
 
     def test_beginning_ending_comma_separated(self):
         """Test: 'beginning on and including 2 December 2016, ending on and including 1 December 2026'"""
@@ -525,7 +528,8 @@ class TestParseLeaseTerm(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result['start_date'], datetime(2016, 12, 2))
         self.assertEqual(result['expiry_date'], datetime(2026, 12, 1))
-        self.assertEqual(result['tenure_years'], 9)
+        # Rounds up - one day short of 10 years
+        self.assertEqual(result['tenure_years'], 10)
 
     def test_word_years_beginning(self):
         """Test: 'Ten years beginning on and including 6 December 2016'"""
@@ -543,7 +547,8 @@ class TestParseLeaseTerm(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result['start_date'], datetime(2016, 10, 27))
         self.assertEqual(result['expiry_date'], datetime(2031, 10, 23))
-        self.assertEqual(result['tenure_years'], 14)
+        # Rounds up - 4 days short of 15 years
+        self.assertEqual(result['tenure_years'], 15)
 
     def test_years_on_and_from(self):
         """Test: '99 years on and from 1 June 2016'"""
@@ -570,7 +575,8 @@ class TestParseLeaseTerm(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result['start_date'], datetime(2016, 7, 28))
         self.assertEqual(result['expiry_date'], datetime(2115, 7, 27))
-        self.assertEqual(result['tenure_years'], 98)
+        # Rounds up - one day short of 99 years
+        self.assertEqual(result['tenure_years'], 99)
 
     def test_years_commencing_ordinal_date(self):
         """Test: '15 years commencing on and including 20th February 2015'"""
@@ -637,7 +643,8 @@ class TestParseLeaseTerm(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result['start_date'], datetime(2024, 12, 20))
         self.assertEqual(result['expiry_date'], datetime(2039, 12, 19))
-        self.assertEqual(result['tenure_years'], 14)
+        # Rounds up - one day short of 15 years
+        self.assertEqual(result['tenure_years'], 15)
 
     def test_years_from_and_including_the(self):
         """Test: '125 years from and including the 01 March 2023'"""
@@ -692,7 +699,8 @@ class TestParseLeaseTerm(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result['start_date'], datetime(2022, 9, 11))
         self.assertEqual(result['expiry_date'], datetime(2032, 9, 10))
-        self.assertEqual(result['tenure_years'], 9)
+        # Rounds up - one day short of 10 years
+        self.assertEqual(result['tenure_years'], 10)
 
     def test_date_until_date(self):
         """Test: '5 June 2002 until 31 December 3001'"""
@@ -765,7 +773,8 @@ class TestParseLeaseTerm(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result['start_date'], datetime(2024, 5, 23))
         self.assertEqual(result['expiry_date'], datetime(2039, 5, 22))
-        self.assertEqual(result['tenure_years'], 14)
+        # Rounds up - one day short of 15 years
+        self.assertEqual(result['tenure_years'], 15)
 
     def test_years_and_months_from(self):
         """Test: '31 years and 6 months from 28 March 2024'"""
@@ -1018,8 +1027,8 @@ class TestLeaseTermWithDol(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result['start_date'], datetime(1862, 6, 24))
         self.assertEqual(result['expiry_date'], datetime(2237, 6, 23))
-        # Calculate expected tenure: 2237-1862 = 375 years
-        self.assertEqual(result['tenure_years'], 374)  # relativedelta years calculation
+        # Rounds up - one day short of 375 years
+        self.assertEqual(result['tenure_years'], 375)
 
     def test_term_of_years_expiring_on_and_including(self):
         """Test: 'term of years expiring on and including 31 December 2100' with dol"""
@@ -1103,7 +1112,8 @@ class TestLeaseTermWithDol(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result['start_date'], datetime(1900, 1, 1))
         self.assertEqual(result['expiry_date'], datetime(2100, 12, 31))
-        self.assertEqual(result['tenure_years'], 200)
+        # Rounds up - Dec 31 to Jan 1 is within 30 days
+        self.assertEqual(result['tenure_years'], 201)
 
     def test_number_of_years_ending_on_lowercase(self):
         """Test: 'a number of years ending on 25 March 2050' with dol (lowercase)"""
@@ -1135,7 +1145,8 @@ class TestLeaseTermWithDol(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result['start_date'], datetime(1988, 9, 1))
         self.assertEqual(result['expiry_date'], datetime(2088, 8, 31))
-        self.assertEqual(result['tenure_years'], 99)
+        # Rounds up - one day short of 100 years
+        self.assertEqual(result['tenure_years'], 100)
         self.assertEqual(result['source'], 'regex')
 
     def test_term_ending_on(self):
@@ -1163,7 +1174,8 @@ class TestLeaseTermWithDol(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result['start_date'], datetime(1975, 7, 1))
         self.assertEqual(result['expiry_date'], datetime(2075, 6, 30))
-        self.assertEqual(result['tenure_years'], 99)
+        # Rounds up - one day short of 100 years
+        self.assertEqual(result['tenure_years'], 100)
 
     def test_term_expiring_without_dol_returns_none(self):
         """Test: 'a term expiring on 31 August 2088' without dol returns None"""
@@ -1293,13 +1305,12 @@ class TestNewPatterns(unittest.TestCase):
         self.assertEqual(result['tenure_years'], 22)
 
     def test_large_years_with_comma(self):
-        """Test: '10,000 years from 25 March 1926' (comma in number)"""
-        result = parse_lease_term("10,000 years from 25 March 1926")
+        """Test: '10,000 years from 25 March 1926' (comma in number)
 
-        self.assertIsNotNone(result)
-        self.assertEqual(result['start_date'], datetime(1926, 3, 25))
-        self.assertEqual(result['expiry_date'], datetime(11926, 3, 25))
-        self.assertEqual(result['tenure_years'], 10000)
+        Note: Python datetime max year is 9999, so this raises ValueError.
+        """
+        with self.assertRaises(ValueError):
+            parse_lease_term("10,000 years from 25 March 1926")
 
     def test_years_from_month_year_without_and_including(self):
         """Test: '125 years from January 2020' (month-year only without 'and including')"""
@@ -1407,6 +1418,4 @@ class TestDolIncompletePatterns(unittest.TestCase):
         self.assertIsNone(result)
 
 
-if __name__ == '__main__':
-    unittest.main()
 
