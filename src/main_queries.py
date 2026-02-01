@@ -41,7 +41,7 @@ def get_invalid_regex_records(
 
         cursor = collection.find(
             {"regex_is_valid": False,
-            "term": {"$exists": True}}
+            "term": {"$exists": True, "$ne": ""}}
         ).skip(start).limit(offset)
 
         return list(cursor)
@@ -62,7 +62,7 @@ def main():
     print("Fetching records with regex_is_valid = False...")
     print()
 
-    records = get_invalid_regex_records(start=130020, offset=100)
+    records = get_invalid_regex_records(start=90020, offset=100)
 
     print(f"Found {len(records)} record(s):")
     print("-" * 60)

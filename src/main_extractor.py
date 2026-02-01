@@ -24,6 +24,7 @@ CONNECTION_STRING = "mongodb://localhost:27017"
 DATABASE_NAME = "leases"
 COLLECTION_NAME = "leases"
 TERM_FIELD = "term"
+DOL_FIELD = "dol"  # Date of Lease field
 
 # Batch processing settings
 BATCH_SIZE = 1000  # Number of documents to process before bulk update
@@ -35,7 +36,7 @@ def process_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     Process a single record: extract lease term and validate.
 
     Args:
-        record: MongoDB document with 'term' field
+        record: MongoDB document with 'term' field and optional 'dol' (date of lease) field
 
     Returns:
         Dictionary with fields to update, or None if no term field
@@ -47,7 +48,9 @@ def process_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "regex_parse_error": "No term field found"
         }
 
-    lease_data = parse_lease_term(term_str)
+    # Get date of lease (dol) if available for patterns that reference it
+    dol = record.get(DOL_FIELD)
+    lease_data = parse_lease_term(term_str, dol=dol)
     if lease_data is None:
         return {
             "regex_is_valid": False,
@@ -81,7 +84,7 @@ def process_all_records():
         # Filter to skip already processed records and empty term fields (supports incremental runs)
         query_filter = {
             "regex_is_valid": {"$ne": True},
-            TERM_FIELD: {"$exists": True}
+            TERM_FIELD: {"$exists": True, "$ne": ""}
         }
 
         # Get total count for progress bar

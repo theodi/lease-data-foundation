@@ -21,8 +21,8 @@ WORD_NUMBERS = (
     r'fifty|sixty|seventy|eighty|ninety|hundred'
 )
 
-# Years number: digit or word (e.g., "99", "one", "999~")
-YEARS_NUM = rf'(\d{{1,4}}|{WORD_NUMBERS})~?'
+# Years number: digit or word (e.g., "99", "one", "999~", "10000")
+YEARS_NUM = rf'(\d{{1,6}}|{WORD_NUMBERS})~?'
 
 # Fractional years (e.g., "97 3/4", "65 and half", "52 and a quarter")
 FRACTIONAL_YEARS = rf'(\d{{1,4}}(?:\s+\d+/\d+)?|\d{{1,4}}\s+and\s+(?:a\s+)?(?:half|quarter))~?'
@@ -41,6 +41,9 @@ YEAR = r'(\d{4})'
 
 # Full date pattern: DD sep Month sep YYYY
 DATE_PATTERN = rf'{DAY}{DATE_SEP}{MONTH}{DATE_SEP}{YEAR}'
+
+# Month-Year only pattern (day defaults to 1): Month YYYY
+MONTH_YEAR_PATTERN = rf'({MONTH})\s+({YEAR})'
 
 # Special day names (Christmas Day, Midsummer Day, Lady Day, Michaelmas)
 SPECIAL_DAYS = r'(Christmas\s+Day|Midsummer\s+Day|Midsummer|Christmas|Lady\s+Day|Michaelmas(?:\s+Day)?)'
@@ -61,7 +64,7 @@ START_KEYWORD = r'(?:from|commencing|beginning|starting)'
 START_PREFIX = rf'(?:{START_KEYWORD}\s+(?:{ON}|from\s+)?{AND_INCLUDING}|on\s+and\s+from\s+)'
 
 # End keywords
-END_KEYWORD = r'(?:to|until|up\s+to|ending|expiring|and\s+ending|and\s+expiring)'
+END_KEYWORD = r'(?:to|until|up\s+to|ending|expiring|terminating|and\s+ending|and\s+expiring|and\s+terminating)'
 
 # Days/months modifier: "less X days", "(less X days)", "plus X days", "and X days"
 DAYS_WORD = rf'(\d+|{WORD_NUMBERS})'
@@ -99,6 +102,59 @@ def parse_date(day: str, month: str, year: str) -> Optional[datetime]:
                 return datetime.strptime(f"{day}/{month}/{year}", "%d/%m/%Y")
             except ValueError:
                 return None
+
+
+def parse_month_year_date(month: str, year: str) -> Optional[datetime]:
+    """
+    Parse month and year into a datetime object, defaulting to the 1st day of the month.
+
+    Args:
+        month: Month name or number
+        year: Year
+
+    Returns:
+        datetime object or None if parsing fails
+    """
+    return parse_date("1", month, year)
+
+
+def parse_dol_date(dol: str) -> Optional[datetime]:
+    """
+    Parse a date of lease (dol) string into a datetime object.
+
+    Handles formats like "16-10-1866" (DD-MM-YYYY).
+
+    Args:
+        dol: The date of lease string to parse
+
+    Returns:
+        datetime object or None if parsing fails
+    """
+    if not dol:
+        return None
+
+    # Strip whitespace
+    dol = dol.strip()
+
+    # Try DD-MM-YYYY format
+    try:
+        return datetime.strptime(dol, "%d-%m-%Y")
+    except ValueError:
+        pass
+
+    # Try DD/MM/YYYY format
+    try:
+        return datetime.strptime(dol, "%d/%m/%Y")
+    except ValueError:
+        pass
+
+    # Try DD.MM.YYYY format
+    try:
+        return datetime.strptime(dol, "%d.%m.%Y")
+    except ValueError:
+        pass
+
+    return None
 
 
 def parse_word_number(word: str) -> Optional[int]:
@@ -248,7 +304,7 @@ def _calculate_expiry(start_date: datetime, years: float, less_days: int = 0,
     return expiry
 
 
-def parse_lease_term(term_str: str) -> Optional[Dict[str, Any]]:
+def parse_lease_term(term_str: str, dol: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
     Parse a lease term string to extract start date, expiry date, and tenure.
 
@@ -265,9 +321,14 @@ def parse_lease_term(term_str: str) -> Optional[Dict[str, Any]]:
     - "999 years 25 March 1896" (missing 'from' keyword)
     - "999 years and 10 days commencing on and including 10/5/2024"
     - "commencing on 28 July 2016 and expiring on 27 July 2115"
+    - "999 years from the date of the lease" (start date from dol parameter)
+    - "999 years" (start date from dol parameter)
+    - "a term of years expiring on 23 June 2237" (start date from dol parameter)
 
     Args:
         term_str: The lease term string to parse
+        dol: Optional date of lease string (e.g., "16-10-1866") used when the term
+             references "date of the lease" or has no explicit start date
 
     Returns:
         Dictionary with 'start_date', 'expiry_date', 'tenure_years', and 'source' keys,
@@ -633,6 +694,38 @@ def parse_lease_term(term_str: str) -> Optional[Dict[str, Any]]:
             expiry_date = start_date + relativedelta(years=years, months=months)
             return _build_result(start_date, expiry_date, years)
 
+    # Pattern 4j: "X years from [and including] Month YYYY" (no day specified, defaults to 1st)
+    # Example: "999 years from and including December 2023"
+    pattern_years_from_month_year = re.compile(
+        rf'^(?:a\s+term\s+of\s+)?{YEARS_NUM}\s*years?\s+'
+        rf'{START_PREFIX}({MONTH})\s+({YEAR})$',
+        re.IGNORECASE
+    )
+
+    match = pattern_years_from_month_year.search(term_str)
+    if match:
+        years = parse_word_number(match.group(1))
+        start_date = parse_month_year_date(match.group(2), match.group(3))
+        if years and start_date:
+            expiry_date = _calculate_expiry(start_date, years)
+            return _build_result(start_date, expiry_date, years)
+
+    # Pattern 4k: "From and including X years from DD Month YYYY" (weird format)
+    # Example: "From and including 90 years from 2 December 2024"
+    pattern_from_including_years_from = re.compile(
+        rf'^from\s+and\s+including\s+{YEARS_NUM}\s*years?\s+'
+        rf'from\s+{THE}?{DATE_PATTERN}',
+        re.IGNORECASE
+    )
+
+    match = pattern_from_including_years_from.search(term_str)
+    if match:
+        years = parse_word_number(match.group(1))
+        start_date = parse_date(match.group(2), match.group(3), match.group(4))
+        if years and start_date:
+            expiry_date = _calculate_expiry(start_date, years)
+            return _build_result(start_date, expiry_date, years)
+
     # ========================================================================
     # PATTERN GROUP 5: Fallback patterns (missing keywords)
     # ========================================================================
@@ -669,13 +762,135 @@ def parse_lease_term(term_str: str) -> Optional[Dict[str, Any]]:
             return _build_result(start_date, expiry_date, years)
 
     # ========================================================================
+    # PATTERN GROUP 6: Date of Lease (dol) patterns - start date from dol field
+    # ========================================================================
+
+    # Parse dol once if provided
+    dol_date = parse_dol_date(dol) if dol else None
+
+    # Pattern 6a: "X years from the date of the lease" or "X years from date of lease"
+    # Examples: "999 years from the date of the lease", "125 years from date of lease"
+    if dol_date:
+        pattern_years_from_dol = re.compile(
+            rf'^(?:a\s+term\s+of\s+)?{YEARS_NUM}\s*years?\s+'
+            rf'(?:from|commencing\s+on|beginning\s+on)\s+(?:the\s+)?date\s+of\s+(?:the\s+)?lease',
+            re.IGNORECASE
+        )
+
+        match = pattern_years_from_dol.search(term_str)
+        if match:
+            years = parse_word_number(match.group(1))
+            if years:
+                expiry_date = _calculate_expiry(dol_date, years)
+                return _build_result(dol_date, expiry_date, years)
+
+    # Pattern 6b: "a term of years expiring on DD Month YYYY" (no tenure specified, calculate from dol)
+    # Example: "a term of years expiring on 23 June 2237"
+    if dol_date:
+        pattern_term_of_years_expiring = re.compile(
+            rf'^(?:a\s+)?term\s+of\s+years?\s+'
+            rf'expiring\s+{ON}{AND_INCLUDING}{DATE_PATTERN}',
+            re.IGNORECASE
+        )
+
+        match = pattern_term_of_years_expiring.search(term_str)
+        if match:
+            expiry_date = parse_date(match.group(1), match.group(2), match.group(3))
+            if expiry_date:
+                # Calculate tenure from dol to expiry date
+                tenure_years = relativedelta(expiry_date, dol_date).years
+                return _build_result(dol_date, expiry_date, tenure_years)
+
+    # Pattern 6c: "A number of years ending on DD Month YYYY" (no tenure specified, calculate from dol)
+    # Example: "A number of years ending on 12 November 2179"
+    if dol_date:
+        pattern_number_of_years_ending = re.compile(
+            rf'^(?:a\s+)?number\s+of\s+years?\s+'
+            rf'(?:ending|expiring)\s+{ON}{AND_INCLUDING}{DATE_PATTERN}',
+            re.IGNORECASE
+        )
+
+        match = pattern_number_of_years_ending.search(term_str)
+        if match:
+            expiry_date = parse_date(match.group(1), match.group(2), match.group(3))
+            if expiry_date:
+                # Calculate tenure from dol to expiry date
+                tenure_years = relativedelta(expiry_date, dol_date).years
+                return _build_result(dol_date, expiry_date, tenure_years)
+
+    # Pattern 6d: "a term expiring on DD Month YYYY" (no tenure specified, calculate from dol)
+    # Example: "a term expiring on 31 August 2088"
+    if dol_date:
+        pattern_term_expiring = re.compile(
+            rf'^(?:a\s+)?term\s+'
+            rf'(?:expiring|ending)\s+{ON}{AND_INCLUDING}{DATE_PATTERN}',
+            re.IGNORECASE
+        )
+
+        match = pattern_term_expiring.search(term_str)
+        if match:
+            expiry_date = parse_date(match.group(1), match.group(2), match.group(3))
+            if expiry_date:
+                # Calculate tenure from dol to expiry date
+                tenure_years = relativedelta(expiry_date, dol_date).years
+                return _build_result(dol_date, expiry_date, tenure_years)
+
+    # Pattern 6e: "expiring on DD Month YYYY" (just expiry, no term/years prefix, calculate from dol)
+    # Example: "expiring on 28 September 2160"
+    if dol_date:
+        pattern_expiring_only = re.compile(
+            rf'^(?:expiring|ending)\s+{ON}{AND_INCLUDING}{DATE_PATTERN}$',
+            re.IGNORECASE
+        )
+
+        match = pattern_expiring_only.search(term_str)
+        if match:
+            expiry_date = parse_date(match.group(1), match.group(2), match.group(3))
+            if expiry_date:
+                # Calculate tenure from dol to expiry date
+                tenure_years = relativedelta(expiry_date, dol_date).years
+                return _build_result(dol_date, expiry_date, tenure_years)
+
+    # Pattern 6f: "X years less N days" (just tenure with days modifier, ignore days, start from dol)
+    # Example: "999 years less 6 days"
+    if dol_date:
+        pattern_years_less_days_only = re.compile(
+            rf'^(?:a\s+term\s+of\s+)?{YEARS_NUM}\s*years?\s+'
+            rf'less\s+{DAYS_WORD}\s+days?$',
+            re.IGNORECASE
+        )
+
+        match = pattern_years_less_days_only.search(term_str)
+        if match:
+            years = parse_word_number(match.group(1))
+            # Ignore days as per requirement
+            if years:
+                expiry_date = _calculate_expiry(dol_date, years)
+                return _build_result(dol_date, expiry_date, years)
+
+    # Pattern 6g: "X years" alone (just the tenure, start date from dol)
+    # Example: "999 years", "125 years"
+    if dol_date:
+        pattern_years_only = re.compile(
+            rf'^(?:a\s+term\s+of\s+)?{YEARS_NUM}\s*years?$',
+            re.IGNORECASE
+        )
+
+        match = pattern_years_only.search(term_str)
+        if match:
+            years = parse_word_number(match.group(1))
+            if years:
+                expiry_date = _calculate_expiry(dol_date, years)
+                return _build_result(dol_date, expiry_date, years)
+
+    # ========================================================================
     # FALLBACK: Remove parenthetical text and retry
     # ========================================================================
     # If all patterns failed and there's text in parentheses, remove it and retry
     # Example: "99 years (renewable) from 24 June 1862" -> "99 years from 24 June 1862"
     term_without_parens = re.sub(r'\s*\([^)]*\)', '', term_str).strip()
     if term_without_parens != term_str:
-        return parse_lease_term(term_without_parens)
+        return parse_lease_term(term_without_parens, dol=dol)
 
     return None
 
@@ -696,6 +911,8 @@ def normalise_term_str(term_str: str) -> str:
 
     # Remove "midnight on" phrases
     term_str = term_str.replace(" midnight on", " ")
+
+    term_str = term_str.replace("and and", "and")
 
     # Remove ordinal suffixes from dates (1st -> 1, 2nd -> 2, etc.)
     term_str = re.sub(r'\b(\d{1,2})(?:st|nd|rd|th)\b', r'\1', term_str, flags=re.IGNORECASE)
@@ -731,6 +948,7 @@ def normalise_term_str(term_str: str) -> str:
     term_str = re.sub(r'\bles\b', 'less', term_str, flags=re.IGNORECASE)
     term_str = re.sub(r'\brom\b', 'from', term_str, flags=re.IGNORECASE)
     term_str = re.sub(r'\bfrm\b', 'from', term_str, flags=re.IGNORECASE)
+    term_str = re.sub(r'\bform\b', 'from', term_str, flags=re.IGNORECASE)  # "form" -> "from"
     term_str = re.sub(r'\bJanuaryu\b', 'January', term_str, flags=re.IGNORECASE)
     term_str = re.sub(r'\bJnuary\b', 'January', term_str, flags=re.IGNORECASE)
     term_str = re.sub(r'\bFeburary\b', 'February', term_str, flags=re.IGNORECASE)
@@ -738,5 +956,12 @@ def normalise_term_str(term_str: str) -> str:
     term_str = re.sub(r'\bSeptmber\b', 'September', term_str, flags=re.IGNORECASE)
     term_str = re.sub(r'\bNovmber\b', 'November', term_str, flags=re.IGNORECASE)
     term_str = re.sub(r'\bDecmber\b', 'December', term_str, flags=re.IGNORECASE)
+
+    # Fix malformed phrases
+    term_str = re.sub(r'\band\s+to\s+and\s+including\b', 'to and including', term_str, flags=re.IGNORECASE)
+    term_str = re.sub(r'\band\s+including\s+to\s+and\s+including\b', 'to and including', term_str, flags=re.IGNORECASE)
+    term_str = re.sub(r'\btherein\s+mentioned\b', 'the lease', term_str, flags=re.IGNORECASE)  # "date as therein mentioned" -> "date as the lease"
+    term_str = re.sub(r'\bas\s+the\s+lease\b', 'of the lease', term_str, flags=re.IGNORECASE)  # "date as the lease" -> "date of the lease"
+
     return term_str
 
