@@ -1418,4 +1418,173 @@ class TestDolIncompletePatterns(unittest.TestCase):
         self.assertIsNone(result)
 
 
+class TestDolExpiryPatterns(unittest.TestCase):
+    """Tests for DOL-based expiry patterns - term expiring on DATE with dol as start."""
+
+    def test_for_term_expiring_on_the_day_of(self):
+        """Test: 'For a term expiring on the 31st day of March 2122' with dol"""
+        result = parse_lease_term("For a term expiring on the 31st day of March 2122", dol="01-04-1900")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(1900, 4, 1))
+        self.assertEqual(result['expiry_date'], datetime(2122, 3, 31))
+        self.assertEqual(result['tenure_years'], 222)
+
+    def test_for_term_expiring_on_simple(self):
+        """Test: 'for a term expiring on 31 March 2118' with dol"""
+        result = parse_lease_term("for a term expiring on 31 March 2118", dol="01-04-1900")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(1900, 4, 1))
+        self.assertEqual(result['expiry_date'], datetime(2118, 3, 31))
+
+    def test_for_term_expiring_on_31_march_2121(self):
+        """Test: 'For a term expiring on 31 March 2121' with dol"""
+        result = parse_lease_term("For a term expiring on 31 March 2121", dol="01-04-1900")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(1900, 4, 1))
+        self.assertEqual(result['expiry_date'], datetime(2121, 3, 31))
+
+    def test_single_date_expiry(self):
+        """Test: '18 April 1997' with dol (single date as expiry)"""
+        result = parse_lease_term("18 April 1997", dol="01-01-1900")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(1900, 1, 1))
+        self.assertEqual(result['expiry_date'], datetime(1997, 4, 18))
+        self.assertEqual(result['tenure_years'], 97)
+
+    def test_beginning_on_date_of_this_lease_ending_on(self):
+        """Test: 'beginning on, and including the date of this lease and ending on, 1 March 2032' with dol"""
+        result = parse_lease_term("beginning on, and including the date of this lease and ending on, 1 March 2032", dol="01-03-2000")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(2000, 3, 1))
+        self.assertEqual(result['expiry_date'], datetime(2032, 3, 1))
+        self.assertEqual(result['tenure_years'], 32)
+
+    def test_from_month_to_month_year_dol(self):
+        """Test: 'From and including 30 September to and including 29 September 2031' with dol (year from dol)"""
+        result = parse_lease_term("From and including 30 September to and including 29 September 2031", dol="30-09-2020")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(2020, 9, 30))
+        self.assertEqual(result['expiry_date'], datetime(2031, 9, 29))
+        self.assertEqual(result['tenure_years'], 11)
+
+    def test_for_residue_of_term_999_years(self):
+        """Test: 'For the residue of the term of 999 years' with dol"""
+        result = parse_lease_term("For the residue of the term of 999 years", dol="01-01-1900")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(1900, 1, 1))
+        self.assertEqual(result['expiry_date'], datetime(2899, 1, 1))
+        self.assertEqual(result['tenure_years'], 999)
+
+
+class TestMissingYearsKeyword(unittest.TestCase):
+    """Tests for patterns with missing 'years' keyword."""
+
+    def test_125_less_1_day_from_date(self):
+        """Test: '125 less 1 day from 1 May 1989'"""
+        result = parse_lease_term("125 less 1 day from 1 May 1989")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(1989, 5, 1))
+        self.assertEqual(result['expiry_date'], datetime(2114, 4, 30))  # 125 years minus 1 day
+        self.assertEqual(result['tenure_years'], 125)
+
+    def test_999_less_ten_days_from_date(self):
+        """Test: '999 less ten days from 23 March 1958'"""
+        result = parse_lease_term("999 less ten days from 23 March 1958")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(1958, 3, 23))
+        self.assertEqual(result['expiry_date'], datetime(2957, 3, 13))  # 999 years minus 10 days
+        self.assertEqual(result['tenure_years'], 999)
+
+    def test_99_less_10_days_from_numeric_date(self):
+        """Test: '99 less 10 days from 2.4.1986'"""
+        result = parse_lease_term("99 less 10 days from 2.4.1986")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(1986, 4, 2))
+        self.assertEqual(result['expiry_date'], datetime(2085, 3, 23))  # 99 years minus 10 days
+        self.assertEqual(result['tenure_years'], 99)
+
+    def test_999_and_1_day_from_date(self):
+        """Test: '999 and 1 day from 28 March 1988'"""
+        result = parse_lease_term("999 and 1 day from 28 March 1988")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(1988, 3, 28))
+        self.assertEqual(result['expiry_date'], datetime(2987, 3, 29))  # 999 years plus 1 day
+        self.assertEqual(result['tenure_years'], 999)
+
+
+class TestExpiringFromPattern(unittest.TestCase):
+    """Tests for 'Expiring on DATE from DATE' pattern (end date first)."""
+
+    def test_expiring_on_from(self):
+        """Test: 'Expiring on 21 October 2115 from 22 October 1990'"""
+        result = parse_lease_term("Expiring on 21 October 2115 from 22 October 1990")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(1990, 10, 22))
+        self.assertEqual(result['expiry_date'], datetime(2115, 10, 21))
+        self.assertEqual(result['tenure_years'], 125)
+
+
+class TestDateRangePatterns(unittest.TestCase):
+    """Tests for date range patterns."""
+
+    def test_date_to_date_range(self):
+        """Test: '20 February 1989 to 29 February 2114'"""
+        # Note: 2114 is not a leap year, but we trust the input
+        # Our normalizer doesn't correct Feb 29 - we let datetime handle it
+        result = parse_lease_term("20 February 1989 to 28 February 2114")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(1989, 2, 20))
+        self.assertEqual(result['expiry_date'], datetime(2114, 2, 28))
+        self.assertEqual(result['tenure_years'], 125)
+
+    def test_from_numeric_to_numeric_date(self):
+        """Test: 'From 23/5/1988 to 30/4/2114' (April only has 30 days)"""
+        # 31/4 gets normalized to 30/4 by normalise_term_str
+        result = parse_lease_term("From 23/5/1988 to 31/4/2114")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(1988, 5, 23))
+        self.assertEqual(result['expiry_date'], datetime(2114, 4, 30))
+        self.assertEqual(result['tenure_years'], 126)
+
+    def test_from_july_to_june(self):
+        """Test: 'from 1 July 2016 to and including 31 June 3015' (normalizes to 30 June)"""
+        result = parse_lease_term("from 1 July 2016 to and including 31 June 3015")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(2016, 7, 1))
+        self.assertEqual(result['expiry_date'], datetime(3015, 6, 30))
+        self.assertEqual(result['tenure_years'], 999)
+
+    def test_from_and_including_july_to_june(self):
+        """Test: 'From and including 1 July 2006 to and including 31 June 3015' (normalizes to 30 June)"""
+        result = parse_lease_term("From and including 1 July 2006 to and including 31 June 3015")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(2006, 7, 1))
+        self.assertEqual(result['expiry_date'], datetime(3015, 6, 30))
+
+
+class TestLargeYearsWithComma(unittest.TestCase):
+    """Tests for large year values with comma formatting."""
+
+    def test_10000_years_from_date(self):
+        """Test: '10,000 years from 30 June 1897' (comma in number, exceeds datetime max)"""
+        # Python datetime max year is 9999, so this should raise ValueError
+        with self.assertRaises(ValueError):
+            parse_lease_term("10,000 years from 30 June 1897")
+
 

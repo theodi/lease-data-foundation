@@ -40,7 +40,8 @@ def get_invalid_regex_records(
         collection = mongo_client.get_collection(COLLECTION_NAME)
 
         cursor = collection.find(
-            {"regex_is_valid": False,
+            # {"regex_is_valid": False,
+            {"t5_is_valid": False,
             "term": {"$exists": True, "$ne": ""}}
         ).skip(start).limit(offset)
 
@@ -62,7 +63,7 @@ def main():
     print("Fetching records with regex_is_valid = False...")
     print()
 
-    records = get_invalid_regex_records(start=50020, offset=100)
+    records = get_invalid_regex_records(start=12020, offset=100)
 
     print(f"Found {len(records)} record(s):")
     print("-" * 60)

@@ -457,7 +457,23 @@ def parse_lease_term(term_str: str, dol: Optional[str] = None) -> Optional[Dict[
             tenure_years = _calculate_tenure_years(start_date, expiry_date)
             return _build_result(start_date, expiry_date, tenure_years)
 
-    # Pattern 2c: "From DD Month YYYY for a term [of years] expiring on DD Month YYYY"
+    # Pattern 2c: "Expiring on DATE from DATE" (expiry date first, then start date)
+    # Example: "Expiring on 21 October 2115 from 22 October 1990"
+    pattern_expiring_from = re.compile(
+        rf'(?:expiring|ending)\s+{OPT_ON}{OPT_INCLUDING}{DATE_PATTERN}\s+'
+        rf'from\s+{OPT_INCLUDING}{DATE_PATTERN}',
+        re.IGNORECASE
+    )
+
+    match = pattern_expiring_from.search(term_str)
+    if match:
+        expiry_date = parse_date(match.group(1), match.group(2), match.group(3))
+        start_date = parse_date(match.group(4), match.group(5), match.group(6))
+        if start_date and expiry_date:
+            tenure_years = _calculate_tenure_years(start_date, expiry_date)
+            return _build_result(start_date, expiry_date, tenure_years)
+
+    # Pattern 2d: "From DD Month YYYY for a term [of years] expiring on DD Month YYYY"
     pattern_for_term_expiring = re.compile(
         rf'from\s+{OPT_INCLUDING}{DATE_PATTERN}\s+'
         rf'{FOR_TERM}{YEARS_WORD}?\s*expiring\s+{OPT_ON}{OPT_INCLUDING}{DATE_PATTERN}',
@@ -715,6 +731,27 @@ def parse_lease_term(term_str: str, dol: Optional[str] = None) -> Optional[Dict[
             expiry_date = _calculate_expiry(start_date, years)
             return _build_result(start_date, expiry_date, years)
 
+    # Pattern 5c: "X less N days from DATE" or "X and N day(s) from DATE" (missing "years")
+    # Examples: "125 less 1 day from 1 May 1989", "999 less ten days from 23 March 1958"
+    #           "99 less 10 days from 2.4.1986", "999 and 1 day from 28 March 1988"
+    pattern_num_modifier_from_date = re.compile(
+        rf'^(\d{{1,6}})\s+(?:(less|and)\s+({NUM})\s+days?)\s+'
+        rf'{START_PHRASE}{OPT_THE}{DATE_PATTERN}',
+        re.IGNORECASE
+    )
+
+    match = pattern_num_modifier_from_date.search(term_str)
+    if match:
+        years = parse_word_number(match.group(1))
+        modifier_type = match.group(2).lower() if match.group(2) else None
+        modifier_days = parse_word_number(match.group(3)) if match.group(3) else 0
+        start_date = parse_date(match.group(4), match.group(5), match.group(6))
+        if years and start_date:
+            less_days = modifier_days if modifier_type == 'less' else 0
+            plus_days = modifier_days if modifier_type == 'and' else 0
+            expiry_date = _calculate_expiry(start_date, years, less_days=less_days, plus_days=plus_days)
+            return _build_result(start_date, expiry_date, years)
+
     # ========================================================================
     # PATTERN 6: Date of Lease (dol) patterns - start date from dol field
     # ========================================================================
@@ -738,15 +775,34 @@ def parse_lease_term(term_str: str, dol: Optional[str] = None) -> Optional[Dict[
                 expiry_date = _calculate_expiry(dol_date, years)
                 return _build_result(dol_date, expiry_date, years)
 
-        # Pattern 6b: "[a] term [of [years]] expiring/ending on DD Month YYYY"
+        # Pattern 6b: "[For] [a] term [of [years]] expiring/ending on [the] [Nth day of] DD Month YYYY"
         # or "[a] number of years ending on DD Month YYYY"
         # (no tenure specified, calculate from dol)
         # Examples: "a term of years expiring on 23 June 2237",
         #           "A number of years ending on 12 November 2179",
         #           "a term expiring on 31 August 2088",
-        #           "term expiring on 15 March 2200"
+        #           "term expiring on 15 March 2200",
+        #           "For a term expiring on the 31st day of March 2122",
+        #           "for a term expiring on 31 March 2118"
+
+        # Pattern 6b-1: Handle "the Nth day of Month Year" format specifically
+        # Example: "For a term expiring on the 31st day of March 2122"
+        pattern_term_expiring_day_of = re.compile(
+            rf'^(?:for\s+)?(?:a\s+)?(?:term|number)(?:\s+of)?(?:\s+years?)?\s+'
+            rf'(?:expiring|ending)\s+{OPT_ON}{OPT_INCLUDING}{OPT_THE}(\d{{1,2}})\s+day\s+of\s+([A-Za-z]+)\s+(\d{{4}})',
+            re.IGNORECASE
+        )
+
+        match = pattern_term_expiring_day_of.search(term_str)
+        if match:
+            expiry_date = parse_date(match.group(1), match.group(2), match.group(3))
+            if expiry_date:
+                tenure_years = _calculate_tenure_years(dol_date, expiry_date)
+                return _build_result(dol_date, expiry_date, tenure_years)
+
+        # Pattern 6b-2: Standard format without "day of"
         pattern_term_expiring = re.compile(
-            rf'^(?:a\s+)?(?:term|number)(?:\s+of)?(?:\s+years?)?\s+'
+            rf'^(?:for\s+)?(?:a\s+)?(?:term|number)(?:\s+of)?(?:\s+years?)?\s+'
             rf'(?:expiring|ending)\s+{OPT_ON}{OPT_INCLUDING}{DATE_PATTERN}',
             re.IGNORECASE
         )
@@ -802,6 +858,56 @@ def parse_lease_term(term_str: str, dol: Optional[str] = None) -> Optional[Dict[
                 expiry_date = _calculate_expiry(dol_date, years)
                 return _build_result(dol_date, expiry_date, years)
 
+        # Pattern 6f: "beginning on [, and including] [the] date of this lease and ending on [,] DD Month YYYY"
+        # Example: "beginning on, and including the date of this lease and ending on, 1 March 2032"
+        pattern_beginning_dol_ending = re.compile(
+            rf'beginning\s+on[,]?\s*{OPT_INCLUDING}{OPT_THE}date\s+of\s+(?:this\s+)?(?:the\s+)?lease\s+'
+            rf'{END_PHRASE}{DATE_PATTERN}',
+            re.IGNORECASE
+        )
+
+        match = pattern_beginning_dol_ending.search(term_str)
+        if match:
+            expiry_date = parse_date(match.group(1), match.group(2), match.group(3))
+            if expiry_date:
+                tenure_years = _calculate_tenure_years(dol_date, expiry_date)
+                return _build_result(dol_date, expiry_date, tenure_years)
+
+        # Pattern 6g: "From [and including] DD Month to [and including] DD Month YYYY"
+        # (start year same as dol year)
+        # Example: "From and including 30 September to and including 29 September 2031"
+        pattern_from_month_to_month_year = re.compile(
+            rf'from\s+{OPT_INCLUDING}(\d{{1,2}})\s+([A-Za-z]+)\s+'
+            rf'to\s+{OPT_INCLUDING}{DATE_PATTERN}',
+            re.IGNORECASE
+        )
+
+        match = pattern_from_month_to_month_year.search(term_str)
+        if match:
+            start_day, start_month = match.group(1), match.group(2)
+            end_day, end_month, end_year = match.group(3), match.group(4), match.group(5)
+            # Start year comes from dol
+            start_year = str(dol_date.year)
+            start_date = parse_date(start_day, start_month, start_year)
+            expiry_date = parse_date(end_day, end_month, end_year)
+            if start_date and expiry_date:
+                tenure_years = _calculate_tenure_years(start_date, expiry_date)
+                return _build_result(start_date, expiry_date, tenure_years)
+
+        # Pattern 6h: Single date as expiry date (e.g., "18 April 1997")
+        # Uses dol as start date
+        pattern_single_date = re.compile(
+            rf'^{DATE_PATTERN}$',
+            re.IGNORECASE
+        )
+
+        match = pattern_single_date.search(term_str)
+        if match:
+            expiry_date = parse_date(match.group(1), match.group(2), match.group(3))
+            if expiry_date:
+                tenure_years = _calculate_tenure_years(dol_date, expiry_date)
+                return _build_result(dol_date, expiry_date, tenure_years)
+
     # ========================================================================
     # FALLBACK: Remove parenthetical text and retry
     # ========================================================================
@@ -825,8 +931,8 @@ def normalise_term_str(term_str: str) -> str:
     # Remove problematic special characters (but keep colons for date formats like 12:7:1973)
     term_str = term_str.replace('´', '').replace('~', '').replace('¨', '').replace(',', '')
 
-    # Remove "Residue of" prefix
-    term_str = re.sub(r'^Residue\s+of\s+', '', term_str, flags=re.IGNORECASE)
+    # Remove "Residue of" prefix (also handles "residue of the term of")
+    term_str = re.sub(r'^(?:For\s+)?(?:the\s+)?Residue\s+of\s+(?:the\s+)?(?:term\s+of\s+)?', '', term_str, flags=re.IGNORECASE)
 
     # Remove "midnight on" phrases
     term_str = term_str.replace(" midnight on", "")
@@ -891,6 +997,15 @@ def normalise_term_str(term_str: str) -> str:
 
     # Fix "including/from" -> "including" (typo with slash)
     term_str = re.sub(r'\bincluding/from\b', 'including', term_str, flags=re.IGNORECASE)
+
+    # Fix invalid dates: 31 June -> 30 June, 31 April -> 30 April (months with only 30 days)
+    term_str = re.sub(r'\b31\s+(June|April|September|November)\b', r'30 \1', term_str, flags=re.IGNORECASE)
+    # Also fix numeric format: 31/4 -> 30/4, 31/6 -> 30/6, 31/9 -> 30/9, 31/11 -> 30/11
+    term_str = re.sub(r'\b31[/.](?=4|6|9|11)\b', r'30/', term_str)
+    term_str = re.sub(r'\b31/4\b', '30/4', term_str)
+    term_str = re.sub(r'\b31/6\b', '30/6', term_str)
+    term_str = re.sub(r'\b31/9\b', '30/9', term_str)
+    term_str = re.sub(r'\b31/11\b', '30/11', term_str)
 
     # Remove trailing "hereof" and similar
     term_str = re.sub(r'\s+hereof\s*$', '', term_str, flags=re.IGNORECASE)

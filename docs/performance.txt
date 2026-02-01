@@ -120,5 +120,12 @@ Time elapsed:       2168.84 seconds (36.1 minutes)
 Processing rate:    30.1 docs/second
 Batch size used:    32
 
+regex improve
 
+Total processed:    20,218
+Valid extractions:  2,011 (9.9%)
+Invalid/failed:     18,207 (90.1%)
+Errors:             2,397
+Time elapsed:       4.94 seconds
+Processing rate:    4093 docs/second
 

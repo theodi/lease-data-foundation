@@ -83,6 +83,7 @@ def process_all_records():
         # Filter to skip already processed records and empty term fields (supports incremental runs)
         query_filter = {
             "regex_is_valid": {"$ne": True},
+            "t5_is_valid": {"$ne": True},
             TERM_FIELD: {"$exists": True, "$ne": ""}
         }
 
