@@ -1310,6 +1310,102 @@ class TestNewPatterns(unittest.TestCase):
         self.assertEqual(result['expiry_date'], datetime(2145, 1, 1))
         self.assertEqual(result['tenure_years'], 125)
 
+    def test_from_date_to_date(self):
+        """Test: 'from 31 October 2018 to 31 November 2176'"""
+        # Note: November only has 30 days, but we test the parsing works
+        result = parse_lease_term("from 31 October 2018 to 30 November 2176")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(2018, 10, 31))
+        self.assertEqual(result['expiry_date'], datetime(2176, 11, 30))
+
+    def test_for_term_of_years_less_days(self):
+        """Test: 'From and including 19 September 1988 for the term of 125 years less the last 5 days'"""
+        result = parse_lease_term("From and including 19 September 1988 for the term of 125 years less the last 5 days")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(1988, 9, 19))
+        self.assertEqual(result['tenure_years'], 125)
+
+    def test_years_months_from_less_days(self):
+        """Test: '980 years 6 months from 25 March 1923 less the last 3 days hereof'"""
+        result = parse_lease_term("980 years 6 months from 25 March 1923 less the last 3 days hereof")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(1923, 3, 25))
+        self.assertEqual(result['tenure_years'], 980)
+
+    def test_date_expiring_on_date(self):
+        """Test: '18 December 1987 expiring on 17 December 2176'"""
+        result = parse_lease_term("18 December 1987 expiring on 17 December 2176")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(1987, 12, 18))
+        self.assertEqual(result['expiry_date'], datetime(2176, 12, 17))
+        self.assertEqual(result['tenure_years'], 189)
+
+    def test_years_from_month_year_december(self):
+        """Test: '999 years from and including December 2019' (use month's 1st day)"""
+        result = parse_lease_term("999 years from and including December 2019")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(2019, 12, 1))
+        self.assertEqual(result['tenure_years'], 999)
+
+    def test_years_commencing_including_from(self):
+        """Test: '999 years commencing on and including/from 01 January 2019' (slash typo)"""
+        result = parse_lease_term("999 years commencing on and including/from 01 January 2019")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(2019, 1, 1))
+        self.assertEqual(result['tenure_years'], 999)
+
+    def test_years_from_missing_space(self):
+        """Test: '150 years from1 January 1998' (missing space after 'from')"""
+        result = parse_lease_term("150 years from1 January 1998")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(1998, 1, 1))
+        self.assertEqual(result['tenure_years'], 150)
+
+
+class TestDolIncompletePatterns(unittest.TestCase):
+    """Tests for DOL-related incomplete patterns."""
+
+    def test_years_from_incomplete(self):
+        """Test: '125 years from' with dol"""
+        result = parse_lease_term("125 years from", dol="01-01-1900")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(1900, 1, 1))
+        self.assertEqual(result['tenure_years'], 125)
+
+    def test_years_from_and_including_incomplete(self):
+        """Test: '125 years from and including' with dol"""
+        result = parse_lease_term("125 years from and including", dol="15-06-1950")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(1950, 6, 15))
+        self.assertEqual(result['tenure_years'], 125)
+
+    def test_years_commencing_incomplete(self):
+        """Test: '200 years commencing' with dol"""
+        result = parse_lease_term("200 years commencing", dol="01-01-1850")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(1850, 1, 1))
+        self.assertEqual(result['tenure_years'], 200)
+
+    def test_years_from_incomplete_without_dol_returns_none(self):
+        """Test: '125 years from' without dol returns None"""
+        result = parse_lease_term("125 years from")
+        self.assertIsNone(result)
+
+    def test_years_from_and_including_incomplete_without_dol_returns_none(self):
+        """Test: '125 years from and including' without dol returns None"""
+        result = parse_lease_term("125 years from and including")
+        self.assertIsNone(result)
+
 
 if __name__ == '__main__':
     unittest.main()
