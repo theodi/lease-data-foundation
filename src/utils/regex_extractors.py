@@ -10,6 +10,69 @@ from dateutil.relativedelta import relativedelta
 from typing import Optional, Dict, Any
 
 
+# ============================================================================
+# COMMON REGEX BUILDING BLOCKS (for maintainability and reuse)
+# ============================================================================
+
+# Word numbers commonly used in lease terms
+WORD_NUMBERS = (
+    r'one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|'
+    r'fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|'
+    r'fifty|sixty|seventy|eighty|ninety|hundred'
+)
+
+# Years number: digit or word (e.g., "99", "one", "999~")
+YEARS_NUM = rf'(\d{{1,4}}|{WORD_NUMBERS})~?'
+
+# Fractional years (e.g., "97 3/4", "65 and half", "52 and a quarter")
+FRACTIONAL_YEARS = rf'(\d{{1,4}}(?:\s+\d+/\d+)?|\d{{1,4}}\s+and\s+(?:a\s+)?(?:half|quarter))~?'
+
+# Date separator: space, period, or slash
+DATE_SEP = r'[./\s]+'
+
+# Day component (supports ordinal like 1st, 2nd handled in normalization)
+DAY = r'(\d{1,2})'
+
+# Month: text name or numeric
+MONTH = r'([A-Za-z]+|\d{1,2})'
+
+# Year: 4 digits
+YEAR = r'(\d{4})'
+
+# Full date pattern: DD sep Month sep YYYY
+DATE_PATTERN = rf'{DAY}{DATE_SEP}{MONTH}{DATE_SEP}{YEAR}'
+
+# Special day names (Christmas Day, Midsummer Day, Lady Day, Michaelmas)
+SPECIAL_DAYS = r'(Christmas\s+Day|Midsummer\s+Day|Midsummer|Christmas|Lady\s+Day|Michaelmas(?:\s+Day)?)'
+
+# Optional "and including" phrase
+AND_INCLUDING = r'(?:and\s+including\s+)?'
+
+# Optional "on" word
+ON = r'(?:on\s+)?'
+
+# Optional "the" word
+THE = r'(?:the\s+)?'
+
+# Start keywords: from, commencing, beginning
+START_KEYWORD = r'(?:from|commencing|beginning)'
+
+# Optional start prefix variations: "on and from", "from", "commencing on", "beginning on"
+START_PREFIX = rf'(?:{START_KEYWORD}\s+{ON}|on\s+and\s+from\s+)'
+
+# End keywords
+END_KEYWORD = r'(?:to|until|ending|expiring|and\s+ending|and\s+expiring)'
+
+# Days/months modifier: "less X days", "(less X days)", "plus X days", "and X days"
+DAYS_WORD = rf'(\d+|{WORD_NUMBERS})'
+MONTHS_WORD = rf'(\d+|{WORD_NUMBERS})'
+
+# Optional "less/plus days" modifier
+LESS_DAYS_MOD = rf'(?:\s*\(?less\s+{THE}?(?:last\s+)?{DAYS_WORD}\s+days?\)?)?'
+PLUS_DAYS_MOD = rf'(?:\s+(?:plus|and)\s+{DAYS_WORD}\s+days?)?'
+LESS_MONTHS_MOD = rf'(?:\s+less\s+{MONTHS_WORD}\s+months?)?'
+
+
 def parse_date(day: str, month: str, year: str) -> Optional[datetime]:
     """
     Parse date components into a datetime object.
@@ -22,9 +85,9 @@ def parse_date(day: str, month: str, year: str) -> Optional[datetime]:
     Returns:
         datetime object or None if parsing fails
     """
+    date_str = f"{day} {month} {year}"
     try:
         # Try parsing with month name
-        date_str = f"{day} {month} {year}"
         return datetime.strptime(date_str, "%d %B %Y")
     except ValueError:
         try:
@@ -164,6 +227,27 @@ def resolve_special_day(day_name: str, year: str) -> Optional[datetime]:
     return None
 
 
+def _build_result(start_date: datetime, expiry_date: datetime, tenure_years) -> Dict[str, Any]:
+    """Build the standard result dictionary."""
+    return {
+        'start_date': start_date,
+        'expiry_date': expiry_date,
+        'tenure_years': tenure_years,
+        'source': 'regex'
+    }
+
+
+def _calculate_expiry(start_date: datetime, years: float, less_days: int = 0,
+                      plus_days: int = 0, less_months: int = 0) -> datetime:
+    """Calculate expiry date from start date and tenure adjustments."""
+    full_years = int(years)
+    fractional_months = int(round((years - full_years) * 12))
+    expiry = start_date + relativedelta(years=full_years, months=fractional_months)
+    expiry = expiry - timedelta(days=less_days) + timedelta(days=plus_days)
+    expiry = expiry - relativedelta(months=less_months)
+    return expiry
+
+
 def parse_lease_term(term_str: str) -> Optional[Dict[str, Any]]:
     """
     Parse a lease term string to extract start date, expiry date, and tenure.
@@ -171,7 +255,7 @@ def parse_lease_term(term_str: str) -> Optional[Dict[str, Any]]:
     Handles various formats including:
     - "99 years from 24 June 1862"
     - "99 years less 3 days from 25 March 1868"
-    - "99 years from 29.9.1909"
+    - "99 years from 29.9.1909" (numeric date)
     - "From and including 24 June 2020 to and including 23 June 2025"
     - "Beginning on and including 1 April 1982 and ending on and including 31 March 2197"
     - "a term of 10 years from and including 17 December 2021 to and including 16 December 2031"
@@ -179,6 +263,8 @@ def parse_lease_term(term_str: str) -> Optional[Dict[str, Any]]:
     - "65 and half years from 25 March 1904" (word fractions)
     - "99 years from Christmas Day 1900" (special day names)
     - "999 years 25 March 1896" (missing 'from' keyword)
+    - "999 years and 10 days commencing on and including 10/5/2024"
+    - "commencing on 28 July 2016 and expiring on 27 July 2115"
 
     Args:
         term_str: The lease term string to parse
@@ -192,45 +278,123 @@ def parse_lease_term(term_str: str) -> Optional[Dict[str, Any]]:
 
     term_str = normalise_term_str(term_str)
 
-    # Pattern 1: "X years from and including DD Month YYYY to and including DD Month YYYY"
-    # Example: "10 years from and including 25 August 2020 to and including 24 August 2030"
-    # This must come before other patterns to capture stated years with explicit date ranges
-    pattern1 = re.compile(
-        r'(?:a\s+term\s+of\s+)?(\d{1,4}|one|two|three|four|five|six|seven|eight|nine|ten)\s*years?\s+'
-        r'from\s+(?:and\s+including\s+)?(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})\s+'
-        r'(?:to|until)\s+(?:and\s+including\s+)?(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})',
+    # ========================================================================
+    # PATTERN GROUP 1: Years with both start and end dates explicitly stated
+    # ========================================================================
+
+    # Pattern 1: "X years [from|commencing|beginning] ... [to|ending|expiring] ..."
+    # Examples:
+    #   "10 years from and including 25 August 2020 to and including 24 August 2030"
+    #   "215 years beginning on and including 24 June 1986 and ending on and including 23 June 2201"
+    #   "189 years commencing on and including 01 September 1995 and expiring on and including 31 August 2184"
+    #   "125 years beginning on 1 January 2013 inclusive and ending on 31 December 2138 inclusive"
+    #   "22 years commencing on and including 8 November 2023 and ending on 7 November 2045"
+    pattern_years_start_end = re.compile(
+        rf'(?:a\s+term\s+of\s+)?{YEARS_NUM}\s*years?\s+'
+        rf'{START_KEYWORD}\s+{ON}{AND_INCLUDING}{DATE_PATTERN}\s*(?:inclusive\s+)?'
+        rf'(?:and\s+)?{END_KEYWORD}\s+{ON}{AND_INCLUDING}{DATE_PATTERN}\s*(?:inclusive)?',
         re.IGNORECASE
     )
 
-    match = pattern1.search(term_str)
+    match = pattern_years_start_end.search(term_str)
     if match:
         years = parse_word_number(match.group(1))
         start_date = parse_date(match.group(2), match.group(3), match.group(4))
         expiry_date = parse_date(match.group(5), match.group(6), match.group(7))
-
         if start_date and expiry_date and years:
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': years,
-                'source': 'regex'
-            }
+            return _build_result(start_date, expiry_date, years)
 
-    # Pattern 2a: Fractional/word-fraction years with "less X days" and special days
-    # Examples: "97 3/4 years from 25 March 1866", "65 and half years from 25 March 1904"
-    # Also: "52 and a quarter years less 10 days from 25 March 1906"
-    # Also: "99 years less 10 days from Midsummer Day 1852"
-    # Also: "67 years (less 3 days) from Midsummer Day 1881"
-    pattern2a = re.compile(
-        r'^(?:a term of\s+)?(\d{1,4}(?:\s+\d+/\d+)?|\d{1,4}\s+and\s+(?:a\s+)?(?:half|quarter))~?\s*years?'
-        r'(?:\s*\(?less\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+days?\)?)?'
-        r'\s+from\s+(?:and\s+including\s+)?'
-        r'(?:(\d{1,2})[.\s]+([A-Za-z]+|\d{1,2})[.\s]+(\d{4})|'
-        r'(Christmas\s+Day|Midsummer\s+Day|Midsummer|Christmas|Lady\s+Day|Michaelmas(?:\s+Day)?)\s+(\d{4}))',
+    # ========================================================================
+    # PATTERN GROUP 2: Date range without explicit years (tenure calculated)
+    # ========================================================================
+
+    # Pattern 2a: "From [and including] DD Month YYYY to/until/ending DD Month YYYY"
+    # Also: "Beginning on ... ending on ..." and "commencing on ... expiring on ..."
+    # Examples:
+    #   "From and including 24 June 2020 to and including 23 June 2025"
+    #   "Beginning on and including 1 April 1982 and ending on and including 31 March 2197"
+    #   "Beginning on and including 1 September 2016 ending on and including 2 August 3015"
+    #   "commencing on 28 July 2016 and expiring on 27 July 2115"
+    #   "A term commencing on and including 27 October 2016 and expiring on and including 23 October 2031"
+    pattern_date_range = re.compile(
+        rf'(?:a\s+term\s+)?{START_KEYWORD}\s+{ON}{AND_INCLUDING}{DATE_PATTERN}\s*[,]?\s*'
+        rf'(?:and\s+)?{END_KEYWORD}\s+{ON}{AND_INCLUDING}{DATE_PATTERN}',
         re.IGNORECASE
     )
 
-    match = pattern2a.search(term_str)
+    match = pattern_date_range.search(term_str)
+    if match:
+        start_date = parse_date(match.group(1), match.group(2), match.group(3))
+        expiry_date = parse_date(match.group(4), match.group(5), match.group(6))
+        if start_date and expiry_date:
+            tenure_years = relativedelta(expiry_date, start_date).years
+            return _build_result(start_date, expiry_date, tenure_years)
+
+    # Pattern 2b: "From DD.MM.YYYY to DD.MM.YYYY" or mixed "from DD.MM.YYYY to DD Month YYYY"
+    pattern_numeric_date_range = re.compile(
+        rf'from\s+{DATE_PATTERN}\s+'
+        rf'to\s+{DATE_PATTERN}',
+        re.IGNORECASE
+    )
+
+    match = pattern_numeric_date_range.search(term_str)
+    if match:
+        start_date = parse_date(match.group(1), match.group(2), match.group(3))
+        expiry_date = parse_date(match.group(4), match.group(5), match.group(6))
+        if start_date and expiry_date:
+            tenure_years = relativedelta(expiry_date, start_date).years
+            return _build_result(start_date, expiry_date, tenure_years)
+
+    # Pattern 2c: "DD Month YYYY to DD Month YYYY" (without "from")
+    pattern_date_to_date = re.compile(
+        rf'^{DATE_PATTERN}\s+to\s+{DATE_PATTERN}',
+        re.IGNORECASE
+    )
+
+    match = pattern_date_to_date.search(term_str)
+    if match:
+        start_date = parse_date(match.group(1), match.group(2), match.group(3))
+        expiry_date = parse_date(match.group(4), match.group(5), match.group(6))
+        if start_date and expiry_date:
+            tenure_years = relativedelta(expiry_date, start_date).years
+            return _build_result(start_date, expiry_date, tenure_years)
+
+    # Pattern 2d: "From and including DD Month YYYY for a term of years expiring on DD Month YYYY"
+    pattern_for_term_expiring = re.compile(
+        rf'from\s+{AND_INCLUDING}{DATE_PATTERN}\s+'
+        rf'for\s+a\s+term\s+(?:of\s+)?(?:years?\s+)?expiring\s+{ON}{AND_INCLUDING}{DATE_PATTERN}',
+        re.IGNORECASE
+    )
+
+    match = pattern_for_term_expiring.search(term_str)
+    if match:
+        start_date = parse_date(match.group(1), match.group(2), match.group(3))
+        expiry_date = parse_date(match.group(4), match.group(5), match.group(6))
+        if start_date and expiry_date:
+            tenure_years = relativedelta(expiry_date, start_date).years
+            return _build_result(start_date, expiry_date, tenure_years)
+
+    # ========================================================================
+    # PATTERN GROUP 3: Years with modifiers (less/plus days/months) + start date
+    # ========================================================================
+
+    # Pattern 3a: Fractional years with optional "less days" and date/special day
+    # Examples:
+    #   "97 3/4 years from 25 March 1866"
+    #   "65 and half years from 25 March 1904"
+    #   "52 and a quarter years less 10 days from 25 March 1906"
+    #   "99 years less 10 days from Midsummer Day 1852"
+    #   "67 years (less 3 days) from Midsummer Day 1881"
+    #   "215 years (less 3 days) from and including 24 June 1986"
+    pattern_fractional_years = re.compile(
+        rf'^(?:a\s+term\s+of\s+)?{FRACTIONAL_YEARS}\s*years?'
+        rf'{LESS_DAYS_MOD}'
+        rf'\s+{START_PREFIX}{THE}?{AND_INCLUDING}'
+        rf'(?:{DATE_PATTERN}|{SPECIAL_DAYS}\s+{YEAR})',
+        re.IGNORECASE
+    )
+
+    match = pattern_fractional_years.search(term_str)
     if match:
         years_str = match.group(1)
         years_float = parse_fractional_years(years_str)
@@ -239,709 +403,184 @@ def parse_lease_term(term_str: str) -> Optional[Dict[str, Any]]:
 
         # Check if regular date or special day
         if match.group(3):  # Regular date (day, month, year)
-            day, month, year = match.group(3), match.group(4), match.group(5)
-            start_date = parse_date(day, month, year)
+            start_date = parse_date(match.group(3), match.group(4), match.group(5))
         else:  # Special day name
             special_day = match.group(6)
             year = match.group(7)
             start_date = resolve_special_day(special_day, year)
 
         if years_float and start_date:
-            # Convert fractional years to months
-            full_years = int(years_float)
-            fractional_months = int(round((years_float - full_years) * 12))
-            expiry_date = start_date + relativedelta(years=full_years, months=fractional_months) - timedelta(days=less_days)
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': years_float,
-                'source': 'regex'
-            }
+            expiry_date = _calculate_expiry(start_date, years_float, less_days=less_days)
+            return _build_result(start_date, expiry_date, years_float)
 
-    # Pattern 2: "X years from DD Month YYYY" (with optional modifiers like "less 3 days", "~", "renewable...")
-    # Examples: "99 years from 24 June 1862", "99 years less 3 days from 25 March 1868"
-    # Also handles: "215 years (less 3 days) from and including 24 June 1986"
-    # Also handles: "999 years less one day from 25 December 1897"
-    pattern2 = re.compile(
-        r'^(?:a term of\s+)?(\d{1,4}|one|two|three|four|five|six|seven|eight|nine|ten)~?\s*years?'
-        r'(?:\s*\(?less\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+days?\)?)?'
-        r'\s+from\s+(?:and\s+including\s+)?(\d{1,2})[.\s]+([A-Za-z]+|\d{1,2})[.\s]+(\d{4})',
-        re.IGNORECASE
-    )
-
-    match = pattern2.search(term_str)
-    if match:
-        years = parse_word_number(match.group(1))
-        less_days_str = match.group(2)
-        less_days = parse_word_number(less_days_str) if less_days_str else 0
-        day, month, year = match.group(3), match.group(4), match.group(5)
-        start_date = parse_date(day, month, year)
-
-        if years and start_date:
-            expiry_date = start_date + relativedelta(years=years) - timedelta(days=less_days)
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': years,
-                'source': 'regex'
-            }
-
-    # Pattern 2b: "X years from Special Day YYYY" (e.g., "99 years from Christmas Day 1900")
-    pattern2b = re.compile(
-        r'^(?:a term of\s+)?(\d{1,4}|one|two|three|four|five|six|seven|eight|nine|ten)~?\s*years?'
-        r'(?:\s*\(?less\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+days?\)?)?'
-        r'\s+from\s+(?:and\s+including\s+)?'
-        r'(Christmas\s+Day|Midsummer\s+Day|Midsummer|Christmas|Lady\s+Day|Michaelmas(?:\s+Day)?)\s+(\d{4})',
-        re.IGNORECASE
-    )
-
-    match = pattern2b.search(term_str)
-    if match:
-        years = parse_word_number(match.group(1))
-        less_days_str = match.group(2)
-        less_days = parse_word_number(less_days_str) if less_days_str else 0
-        special_day = match.group(3)
-        year = match.group(4)
-        start_date = resolve_special_day(special_day, year)
-
-        if years and start_date:
-            expiry_date = start_date + relativedelta(years=years) - timedelta(days=less_days)
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': years,
-                'source': 'regex'
-            }
-
-    # Pattern 2c: "X years DD Month YYYY" (missing 'from' keyword)
-    # Example: "999 years 25 March 1896"
-    pattern2c = re.compile(
-        r'^(?:a term of\s+)?(\d{1,4}|one|two|three|four|five|six|seven|eight|nine|ten)~?\s*years?'
-        r'\s+(\d{1,2})[.\s]+([A-Za-z]+|\d{1,2})[.\s]+(\d{4})',
-        re.IGNORECASE
-    )
-
-    match = pattern2c.search(term_str)
-    if match:
-        years = parse_word_number(match.group(1))
-        day, month, year = match.group(2), match.group(3), match.group(4)
-        start_date = parse_date(day, month, year)
-
-        if years and start_date:
-            expiry_date = start_date + relativedelta(years=years)
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': years,
-                'source': 'regex'
-            }
-
-    # Pattern 3: "From [and including] DD Month YYYY to [and including] DD Month YYYY"
-    # Examples: "From and including 24 June 2020 to and including 23 June 2025"
-    pattern3 = re.compile(
-        r'from\s+(?:and\s+including\s+)?(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})\s+'
-        r'(?:to|until|ending\s+on|expiring\s+on|and\s+ending\s+on)\s+'
-        r'(?:and\s+including\s+)?(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})',
-        re.IGNORECASE
-    )
-
-    match = pattern3.search(term_str)
-    if match:
-        start_date = parse_date(match.group(1), match.group(2), match.group(3))
-        expiry_date = parse_date(match.group(4), match.group(5), match.group(6))
-
-        if start_date and expiry_date:
-            tenure_years = relativedelta(expiry_date, start_date).years
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': tenure_years,
-                'source': 'regex'
-            }
-
-    # Pattern 4: "X years beginning on [and including] DD Month YYYY and ending on [and including] DD Month YYYY"
-    # Example: "215 years beginning on and including 24 June 1986 and ending on and including 23 June 2201"
-    # This must come before pattern5 to capture stated years
-    pattern4 = re.compile(
-        r'(\d{1,4}|one|two|three|four|five|six|seven|eight|nine|ten)\s*years?\s+'
-        r'beginning\s+on\s+(?:and\s+including\s+)?(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})\s+'
-        r'and\s+ending\s+on\s+(?:and\s+including\s+)?(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})',
-        re.IGNORECASE
-    )
-
-    match = pattern4.search(term_str)
-    if match:
-        years = parse_word_number(match.group(1))
-        start_date = parse_date(match.group(2), match.group(3), match.group(4))
-        expiry_date = parse_date(match.group(5), match.group(6), match.group(7))
-
-        if start_date and expiry_date and years:
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': years,
-                'source': 'regex'
-            }
-
-    # Pattern 5: "Beginning on [and including] DD Month YYYY and ending on [and including] DD Month YYYY"
-    # Example: "Beginning on and including 1 April 1982 and ending on and including 31 March 2197"
-    pattern5 = re.compile(
-        r'beginning\s+on\s+(?:and\s+including\s+)?(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})\s+'
-        r'and\s+ending\s+on\s+(?:and\s+including\s+)?(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})',
-        re.IGNORECASE
-    )
-
-    match = pattern5.search(term_str)
-    if match:
-        start_date = parse_date(match.group(1), match.group(2), match.group(3))
-        expiry_date = parse_date(match.group(4), match.group(5), match.group(6))
-
-        if start_date and expiry_date:
-            tenure_years = relativedelta(expiry_date, start_date).years
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': tenure_years,
-                'source': 'regex'
-            }
-
-    # Pattern 6: "X years less Y months from DD Month YYYY"
+    # Pattern 3b: Years with "less months"
     # Example: "500 years less 9 months from 29 September 1585"
-    pattern6 = re.compile(
-        r'^(?:a term of\s+)?(\d{1,4}|one|two|three|four|five|six|seven|eight|nine|ten)~?\s*years?'
-        r'\s+less\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+months?'
-        r'\s+from\s+(?:the\s+)?(?:and\s+including\s+)?(\d{1,2})[.\s]+([A-Za-z]+|\d{1,2})[.\s]+(\d{4})',
+    pattern_less_months = re.compile(
+        rf'^(?:a\s+term\s+of\s+)?{YEARS_NUM}\s*years?'
+        rf'\s+less\s+{MONTHS_WORD}\s+months?'
+        rf'\s+{START_PREFIX}{THE}?{AND_INCLUDING}{DATE_PATTERN}',
         re.IGNORECASE
     )
 
-    match = pattern6.search(term_str)
+    match = pattern_less_months.search(term_str)
     if match:
         years = parse_word_number(match.group(1))
         less_months = parse_word_number(match.group(2))
-        day, month, year = match.group(3), match.group(4), match.group(5)
-        start_date = parse_date(day, month, year)
-
+        start_date = parse_date(match.group(3), match.group(4), match.group(5))
         if years and start_date and less_months:
-            expiry_date = start_date + relativedelta(years=years) - relativedelta(months=less_months)
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': years,
-                'source': 'regex'
-            }
+            expiry_date = _calculate_expiry(start_date, years, less_months=less_months)
+            return _build_result(start_date, expiry_date, years)
 
-    # Pattern 7: "X years (less the last Y days) from DD Month YYYY"
-    # Example: "125 years (less the last seven days) from 25 December 2005"
-    pattern7 = re.compile(
-        r'^(?:a term of\s+)?(\d{1,4}|one|two|three|four|five|six|seven|eight|nine|ten)~?\s*years?'
-        r'\s*\(less\s+(?:the\s+)?(?:last\s+)?(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen)\s+days?\)'
-        r'\s+from\s+(?:the\s+)?(?:and\s+including\s+)?(\d{1,2})[.\s]+([A-Za-z]+|\d{1,2})[.\s]+(\d{4})',
+    # Pattern 3c: Years with "plus days" or "and X days"
+    # Examples:
+    #   "999 Years plus 7 days from 01 November 2004"
+    #   "999 years and 10 days commencing on and including 10/5/2024"
+    pattern_plus_days = re.compile(
+        rf'^(?:a\s+term\s+of\s+)?{YEARS_NUM}\s*years?'
+        rf'\s+(?:plus|and)\s+{DAYS_WORD}\s+days?'
+        rf'\s+{START_PREFIX}{THE}?{AND_INCLUDING}{DATE_PATTERN}',
         re.IGNORECASE
     )
 
-    match = pattern7.search(term_str)
-    if match:
-        years = parse_word_number(match.group(1))
-        less_days = parse_word_number(match.group(2))
-        day, month, year = match.group(3), match.group(4), match.group(5)
-        start_date = parse_date(day, month, year)
-
-        if years and start_date and less_days:
-            expiry_date = start_date + relativedelta(years=years) - timedelta(days=less_days)
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': years,
-                'source': 'regex'
-            }
-
-    # Pattern 8: "X years plus Y days from DD Month YYYY"
-    # Example: "999 Years plus 7 days from 01 November 2004"
-    pattern8 = re.compile(
-        r'^(?:a term of\s+)?(\d{1,4}|one|two|three|four|five|six|seven|eight|nine|ten)~?\s*years?'
-        r'\s+plus\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+days?'
-        r'\s+from\s+(?:the\s+)?(?:and\s+including\s+)?(\d{1,2})[.\s/]+([A-Za-z]+|\d{1,2})[.\s/]+(\d{4})',
-        re.IGNORECASE
-    )
-
-    match = pattern8.search(term_str)
+    match = pattern_plus_days.search(term_str)
     if match:
         years = parse_word_number(match.group(1))
         plus_days = parse_word_number(match.group(2))
-        day, month, year = match.group(3), match.group(4), match.group(5)
-        start_date = parse_date(day, month, year)
-
-        if years and start_date and plus_days:
-            expiry_date = start_date + relativedelta(years=years) + timedelta(days=plus_days)
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': years,
-                'source': 'regex'
-            }
-
-    # Pattern 9: "X years from the DD Month YYYY" or "X years from DD/MM/YYYY"
-    # Examples: "999 years from the 22 December 1953", "20 years from 28/06/1996"
-    pattern9 = re.compile(
-        r'^(?:a term of\s+)?(\d{1,4}|one|two|three|four|five|six|seven|eight|nine|ten)~?\s*years?'
-        r'\s+from\s+(?:the\s+)?(?:and\s+including\s+)?(\d{1,2})[./\s]+([A-Za-z]+|\d{1,2})[./\s]+(\d{4})',
-        re.IGNORECASE
-    )
-
-    match = pattern9.search(term_str)
-    if match:
-        years = parse_word_number(match.group(1))
-        day, month, year = match.group(2), match.group(3), match.group(4)
-        start_date = parse_date(day, month, year)
-
-        if years and start_date:
-            expiry_date = start_date + relativedelta(years=years)
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': years,
-                'source': 'regex'
-            }
-
-    # Pattern 10: "From DD.MM.YYYY to DD.MM.YYYY" or "From DD/MM/YYYY to DD/MM/YYYY" (numeric date ranges)
-    # Examples: "From 7.4.2006 to 1.9.2021", "from 30.3.2006 to 18 September 2126"
-    pattern10 = re.compile(
-        r'from\s+(\d{1,2})[./](\d{1,2})[./](\d{4})\s+'
-        r'to\s+(?:(\d{1,2})[./](\d{1,2})[./](\d{4})|(\d{1,2})\s+([A-Za-z]+)\s+(\d{4}))',
-        re.IGNORECASE
-    )
-
-    match = pattern10.search(term_str)
-    if match:
-        start_date = parse_date(match.group(1), match.group(2), match.group(3))
-
-        # Check if end date is numeric or text format
-        if match.group(4):  # Numeric end date
-            expiry_date = parse_date(match.group(4), match.group(5), match.group(6))
-        else:  # Text end date (e.g., "18 September 2126")
-            expiry_date = parse_date(match.group(7), match.group(8), match.group(9))
-
-        if start_date and expiry_date:
-            tenure_years = relativedelta(expiry_date, start_date).years
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': tenure_years,
-                'source': 'regex'
-            }
-
-    # Pattern 11: "DD Month YYYY to DD Month YYYY" (without "from")
-    # Example: "28 April 2006 to 24 December 2172"
-    pattern11 = re.compile(
-        r'^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})\s+'
-        r'to\s+(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})',
-        re.IGNORECASE
-    )
-
-    match = pattern11.search(term_str)
-    if match:
-        start_date = parse_date(match.group(1), match.group(2), match.group(3))
-        expiry_date = parse_date(match.group(4), match.group(5), match.group(6))
-
-        if start_date and expiry_date:
-            tenure_years = relativedelta(expiry_date, start_date).years
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': tenure_years,
-                'source': 'regex'
-            }
-
-    # Pattern 12: "X from DD Month YYYY" (missing "years" keyword)
-    # Example: "999 from 27 April 2006"
-    pattern12 = re.compile(
-        r'^(\d{1,4})\s+from\s+(?:the\s+)?(?:and\s+including\s+)?(\d{1,2})[.\s]+([A-Za-z]+|\d{1,2})[.\s]+(\d{4})',
-        re.IGNORECASE
-    )
-
-    match = pattern12.search(term_str)
-    if match:
-        years = parse_word_number(match.group(1))
-        day, month, year = match.group(2), match.group(3), match.group(4)
-        start_date = parse_date(day, month, year)
-
-        if years and start_date:
-            expiry_date = start_date + relativedelta(years=years)
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': years,
-                'source': 'regex'
-            }
-
-    # Pattern 13: "from and including DD Month YYYY for X years"
-    # Example: "from and including 1 October 2002 for 20 years"
-    pattern13 = re.compile(
-        r'from\s+(?:and\s+including\s+)?(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})\s+'
-        r'for\s+(\d{1,4}|one|two|three|four|five|six|seven|eight|nine|ten)\s*years?',
-        re.IGNORECASE
-    )
-
-    match = pattern13.search(term_str)
-    if match:
-        start_date = parse_date(match.group(1), match.group(2), match.group(3))
-        years = parse_word_number(match.group(4))
-
-        if start_date and years:
-            expiry_date = start_date + relativedelta(years=years)
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': years,
-                'source': 'regex'
-            }
-
-    # Pattern 14: "X years and Y days commencing on [and including] DD/MM/YYYY"
-    # Example: "999 years and 10 days commencing on and including 10/5/2024"
-    pattern14 = re.compile(
-        r'(\d{1,4})\s*years?\s+and\s+(\d+)\s*days?\s+'
-        r'commencing\s+(?:on\s+)?(?:and\s+including\s+)?(\d{1,2})[./\s]+([A-Za-z]+|\d{1,2})[./\s]+(\d{4})',
-        re.IGNORECASE
-    )
-
-    match = pattern14.search(term_str)
-    if match:
-        years = parse_word_number(match.group(1))
-        plus_days = parse_word_number(match.group(2))
-        day, month, year = match.group(3), match.group(4), match.group(5)
-        start_date = parse_date(day, month, year)
-
+        start_date = parse_date(match.group(3), match.group(4), match.group(5))
         if years and start_date and plus_days is not None:
-            expiry_date = start_date + relativedelta(years=years) + timedelta(days=plus_days)
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': years,
-                'source': 'regex'
-            }
+            expiry_date = _calculate_expiry(start_date, years, plus_days=plus_days)
+            return _build_result(start_date, expiry_date, years)
 
-    # Pattern 15: "X years commencing on [and including] DD Month YYYY and expiring on [and including] DD Month YYYY"
-    # Example: "189 years commencing on and including 01 September 1995 and expiring on and including 31 August 2184"
-    pattern15 = re.compile(
-        r'(\d{1,4})\s*years?\s+'
-        r'commencing\s+(?:on\s+)?(?:and\s+including\s+)?(\d{1,2})[./\s]+([A-Za-z]+|\d{1,2})[./\s]+(\d{4})\s+'
-        r'and\s+(?:expiring|ending)\s+(?:on\s+)?(?:and\s+including\s+)?(\d{1,2})[./\s]+([A-Za-z]+|\d{1,2})[./\s]+(\d{4})',
-        re.IGNORECASE
-    )
-
-    match = pattern15.search(term_str)
-    if match:
-        years = parse_word_number(match.group(1))
-        start_date = parse_date(match.group(2), match.group(3), match.group(4))
-        expiry_date = parse_date(match.group(5), match.group(6), match.group(7))
-
-        if years and start_date and expiry_date:
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': years,
-                'source': 'regex'
-            }
-
-    # Pattern 16: "X years beginning on DD Month YYYY inclusive and ending on DD Month YYYY inclusive"
-    # Example: "125 years beginning on 1 January 2013 inclusive and ending on 31 December 2138 inclusive"
-    pattern16 = re.compile(
-        r'(\d{1,4})\s*years?\s+'
-        r'beginning\s+(?:on\s+)?(\d{1,2})[./\s]+([A-Za-z]+|\d{1,2})[./\s]+(\d{4})\s*(?:inclusive)?\s+'
-        r'and\s+ending\s+(?:on\s+)?(\d{1,2})[./\s]+([A-Za-z]+|\d{1,2})[./\s]+(\d{4})\s*(?:inclusive)?',
-        re.IGNORECASE
-    )
-
-    match = pattern16.search(term_str)
-    if match:
-        years = parse_word_number(match.group(1))
-        start_date = parse_date(match.group(2), match.group(3), match.group(4))
-        expiry_date = parse_date(match.group(5), match.group(6), match.group(7))
-
-        if years and start_date and expiry_date:
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': years,
-                'source': 'regex'
-            }
-
-    # Pattern 17: "X years beginning on [and including] DD Month YYYY" (no end date, calculate from years)
-    # Example: "215 years beginning on and including 24 June 1988"
-    pattern17 = re.compile(
-        r'(\d{1,4})\s*years?\s+'
-        r'beginning\s+(?:on\s+)?(?:and\s+including\s+)?(\d{1,2})[./\s]+([A-Za-z]+|\d{1,2})[./\s]+(\d{4})(?:\s|$)',
-        re.IGNORECASE
-    )
-
-    match = pattern17.search(term_str)
-    if match:
-        years = parse_word_number(match.group(1))
-        day, month, year = match.group(2), match.group(3), match.group(4)
-        start_date = parse_date(day, month, year)
-
-        if years and start_date:
-            expiry_date = start_date + relativedelta(years=years)
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': years,
-                'source': 'regex'
-            }
-
-    # Pattern 18: "X years commencing on [and including] DD Month YYYY and ending on DD Month YYYY"
-    # Example: "22 years commencing on and including 8 November 2023 and ending on 7 November 2045"
-    pattern18 = re.compile(
-        r'(\d{1,4})\s*years?\s+'
-        r'commencing\s+(?:on\s+)?(?:and\s+including\s+)?(\d{1,2})[./\s]+([A-Za-z]+|\d{1,2})[./\s]+(\d{4})\s+'
-        r'and\s+ending\s+(?:on\s+)?(?:and\s+including\s+)?(\d{1,2})[./\s]+([A-Za-z]+|\d{1,2})[./\s]+(\d{4})',
-        re.IGNORECASE
-    )
-
-    match = pattern18.search(term_str)
-    if match:
-        years = parse_word_number(match.group(1))
-        start_date = parse_date(match.group(2), match.group(3), match.group(4))
-        expiry_date = parse_date(match.group(5), match.group(6), match.group(7))
-
-        if years and start_date and expiry_date:
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': years,
-                'source': 'regex'
-            }
-
-    # Pattern 19: "From and including DD Month YYYY for a term of years expiring on DD Month YYYY"
-    # Example: "From and including 10 May 2013 for a term of years expiring on 9 December 2190"
-    pattern19 = re.compile(
-        r'from\s+(?:and\s+including\s+)?(\d{1,2})[./\s]+([A-Za-z]+|\d{1,2})[./\s]+(\d{4})\s+'
-        r'for\s+a\s+term\s+(?:of\s+)?(?:years?\s+)?expiring\s+(?:on\s+)?(?:and\s+including\s+)?(\d{1,2})[./\s]+([A-Za-z]+|\d{1,2})[./\s]+(\d{4})',
-        re.IGNORECASE
-    )
-
-    match = pattern19.search(term_str)
-    if match:
-        start_date = parse_date(match.group(1), match.group(2), match.group(3))
-        expiry_date = parse_date(match.group(4), match.group(5), match.group(6))
-
-        if start_date and expiry_date:
-            tenure_years = relativedelta(expiry_date, start_date).years
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': tenure_years,
-                'source': 'regex'
-            }
-
-    # Pattern 20: "commencing on DD Month YYYY for a term of X years"
-    # Example: "commencing on 10 may 2013 for a term of 125 years"
-    pattern20 = re.compile(
-        r'commencing\s+(?:on\s+)?(?:and\s+including\s+)?(\d{1,2})[./\s]+([A-Za-z]+|\d{1,2})[./\s]+(\d{4})\s+'
-        r'for\s+a\s+term\s+(?:of\s+)?(\d{1,4})\s*years?',
-        re.IGNORECASE
-    )
-
-    match = pattern20.search(term_str)
-    if match:
-        day, month, year = match.group(1), match.group(2), match.group(3)
-        start_date = parse_date(day, month, year)
-        years = parse_word_number(match.group(4))
-
-        if start_date and years:
-            expiry_date = start_date + relativedelta(years=years)
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': years,
-                'source': 'regex'
-            }
-
-    # Pattern 21: "X years commencing on [and including] DD Month YYYY" (no end date)
-    # Example: "125 years commencing on and including 1 January 2013"
-    pattern21 = re.compile(
-        r'(\d{1,4})\s*years?\s+'
-        r'commencing\s+(?:on\s+)?(?:and\s+including\s+)?(\d{1,2})[./\s]+([A-Za-z]+|\d{1,2})[./\s]+(\d{4})(?:\s|$)',
-        re.IGNORECASE
-    )
-
-    match = pattern21.search(term_str)
-    if match:
-        years = parse_word_number(match.group(1))
-        day, month, year = match.group(2), match.group(3), match.group(4)
-        start_date = parse_date(day, month, year)
-
-        if years and start_date:
-            expiry_date = start_date + relativedelta(years=years)
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': years,
-                'source': 'regex'
-            }
-
-    # Pattern 22: "Beginning on and including DD Month YYYY ending on and including DD Month YYYY"
-    # Also handles comma-separated: "beginning on and including 2 December 2016, ending on and including 1 December 2026"
-    # Example: "Beginning on and including 1 September 2016 ending on and including 2 August 3015"
-    pattern22 = re.compile(
-        r'beginning\s+(?:on\s+)?(?:and\s+including\s+)?(\d{1,2})[./\s]+([A-Za-z]+|\d{1,2})[./\s]+(\d{4})\s*'
-        r'(?:and\s+)?ending\s+(?:on\s+)?(?:and\s+including\s+)?(\d{1,2})[./\s]+([A-Za-z]+|\d{1,2})[./\s]+(\d{4})',
-        re.IGNORECASE
-    )
-
-    match = pattern22.search(term_str)
-    if match:
-        start_date = parse_date(match.group(1), match.group(2), match.group(3))
-        expiry_date = parse_date(match.group(4), match.group(5), match.group(6))
-
-        if start_date and expiry_date:
-            tenure_years = relativedelta(expiry_date, start_date).years
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': tenure_years,
-                'source': 'regex'
-            }
-
-    # Pattern 23: "X years beginning on [and including] DD Month YYYY" (word numbers like "Ten years")
-    # Example: "Ten years beginning on and including 6 December 2016"
-    pattern23 = re.compile(
-        r'(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|'
-        r'sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)\s*years?\s+'
-        r'beginning\s+(?:on\s+)?(?:and\s+including\s+)?(\d{1,2})[./\s]+([A-Za-z]+|\d{1,2})[./\s]+(\d{4})',
-        re.IGNORECASE
-    )
-
-    match = pattern23.search(term_str)
-    if match:
-        years = parse_word_number(match.group(1))
-        day, month, year = match.group(2), match.group(3), match.group(4)
-        start_date = parse_date(day, month, year)
-
-        if years and start_date:
-            expiry_date = start_date + relativedelta(years=years)
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': years,
-                'source': 'regex'
-            }
-
-    # Pattern 24: "A term commencing on [and including] DD Month YYYY and expiring on [and including] DD Month YYYY"
-    # Example: "A term commencing on and including 27 October 2016 and expiring on and including 23 October 2031"
-    pattern24 = re.compile(
-        r'(?:a\s+)?term\s+commencing\s+(?:on\s+)?(?:and\s+including\s+)?(\d{1,2})[./\s]+([A-Za-z]+|\d{1,2})[./\s]+(\d{4})\s+'
-        r'and\s+expiring\s+(?:on\s+)?(?:and\s+including\s+)?(\d{1,2})[./\s]+([A-Za-z]+|\d{1,2})[./\s]+(\d{4})',
-        re.IGNORECASE
-    )
-
-    match = pattern24.search(term_str)
-    if match:
-        start_date = parse_date(match.group(1), match.group(2), match.group(3))
-        expiry_date = parse_date(match.group(4), match.group(5), match.group(6))
-
-        if start_date and expiry_date:
-            tenure_years = relativedelta(expiry_date, start_date).years
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': tenure_years,
-                'source': 'regex'
-            }
-
-    # Pattern 25: "X years on and from DD Month YYYY"
-    # Example: "99 years on and from 1 June 2016"
-    pattern25 = re.compile(
-        r'(\d{1,4}|one|two|three|four|five|six|seven|eight|nine|ten)\s*years?\s+'
-        r'on\s+and\s+from\s+(\d{1,2})[./\s]+([A-Za-z]+|\d{1,2})[./\s]+(\d{4})',
-        re.IGNORECASE
-    )
-
-    match = pattern25.search(term_str)
-    if match:
-        years = parse_word_number(match.group(1))
-        day, month, year = match.group(2), match.group(3), match.group(4)
-        start_date = parse_date(day, month, year)
-
-        if years and start_date:
-            expiry_date = start_date + relativedelta(years=years)
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': years,
-                'source': 'regex'
-            }
-
-    # Pattern 26: "commencing on DD Month YYYY and expiring on DD Month YYYY" (without years)
-    # Example: "commencing on 28 July 2016 and expiring on 27 July 2115"
-    pattern26 = re.compile(
-        r'commencing\s+(?:on\s+)?(?:and\s+including\s+)?(\d{1,2})[./\s]+([A-Za-z]+|\d{1,2})[./\s]+(\d{4})\s+'
-        r'and\s+expiring\s+(?:on\s+)?(?:and\s+including\s+)?(\d{1,2})[./\s]+([A-Za-z]+|\d{1,2})[./\s]+(\d{4})',
-        re.IGNORECASE
-    )
-
-    match = pattern26.search(term_str)
-    if match:
-        start_date = parse_date(match.group(1), match.group(2), match.group(3))
-        expiry_date = parse_date(match.group(4), match.group(5), match.group(6))
-
-        if start_date and expiry_date:
-            tenure_years = relativedelta(expiry_date, start_date).years
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': tenure_years,
-                'source': 'regex'
-            }
-
-    # Pattern 27: "X years less Y days beginning on DD Month YYYY"
+    # Pattern 3d: Years with "less days" using beginning/commencing
     # Example: "250 years less 20 days beginning on 18 October 2016"
-    pattern27 = re.compile(
-        r'(\d{1,4}|one|two|three|four|five|six|seven|eight|nine|ten)\s*years?\s+'
-        r'less\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\s*days?\s+'
-        r'beginning\s+(?:on\s+)?(?:and\s+including\s+)?(\d{1,2})[./\s]+([A-Za-z]+|\d{1,2})[./\s]+(\d{4})',
+    pattern_less_days_beginning = re.compile(
+        rf'^(?:a\s+term\s+of\s+)?{YEARS_NUM}\s*years?'
+        rf'\s+less\s+{DAYS_WORD}\s+days?'
+        rf'\s+(?:beginning|commencing)\s+{ON}{AND_INCLUDING}{DATE_PATTERN}',
         re.IGNORECASE
     )
 
-    match = pattern27.search(term_str)
+    match = pattern_less_days_beginning.search(term_str)
     if match:
         years = parse_word_number(match.group(1))
         less_days = parse_word_number(match.group(2))
-        day, month, year = match.group(3), match.group(4), match.group(5)
-        start_date = parse_date(day, month, year)
-
+        start_date = parse_date(match.group(3), match.group(4), match.group(5))
         if years and start_date and less_days is not None:
-            expiry_date = start_date + relativedelta(years=years) - timedelta(days=less_days)
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': years,
-                'source': 'regex'
-            }
+            expiry_date = _calculate_expiry(start_date, years, less_days=less_days)
+            return _build_result(start_date, expiry_date, years)
 
-    # Pattern 28: "X years commencing on [and including] DD Month YYYY" (word numbers)
-    # Example: "fifteen years commencing on and including 20 February 2015"
-    pattern28 = re.compile(
-        r'(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|'
-        r'sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)\s*years?\s+'
-        r'commencing\s+(?:on\s+)?(?:and\s+including\s+)?(\d{1,2})[./\s]+([A-Za-z]+|\d{1,2})[./\s]+(\d{4})',
+    # ========================================================================
+    # PATTERN GROUP 4: Simple years + start date (no modifiers)
+    # ========================================================================
+
+    # Pattern 4a: "X years [from|commencing|beginning|on and from] [the] [and including] DD Month YYYY"
+    # Examples:
+    #   "99 years from 24 June 1862"
+    #   "999 years from the 22 December 1953"
+    #   "20 years from 28/06/1996"
+    #   "99 years on and from 1 June 2016"
+    #   "215 years beginning on and including 24 June 1988"
+    #   "15 years commencing on and including 20th February 2015"
+    #   "Ten years beginning on and including 6 December 2016" (word number)
+    pattern_years_from_date = re.compile(
+        rf'^(?:a\s+term\s+of\s+)?{YEARS_NUM}\s*years?\s+'
+        rf'{START_PREFIX}{THE}?{AND_INCLUDING}{DATE_PATTERN}',
         re.IGNORECASE
     )
 
-    match = pattern28.search(term_str)
+    match = pattern_years_from_date.search(term_str)
     if match:
         years = parse_word_number(match.group(1))
-        day, month, year = match.group(2), match.group(3), match.group(4)
-        start_date = parse_date(day, month, year)
-
+        start_date = parse_date(match.group(2), match.group(3), match.group(4))
         if years and start_date:
-            expiry_date = start_date + relativedelta(years=years)
-            return {
-                'start_date': start_date,
-                'expiry_date': expiry_date,
-                'tenure_years': years,
-                'source': 'regex'
-            }
+            expiry_date = _calculate_expiry(start_date, years)
+            return _build_result(start_date, expiry_date, years)
+
+    # Pattern 4b: "X years from Special Day YYYY"
+    # Example: "99 years from Christmas Day 1900"
+    pattern_years_special_day = re.compile(
+        rf'^(?:a\s+term\s+of\s+)?{YEARS_NUM}\s*years?\s+'
+        rf'{START_PREFIX}{THE}?{AND_INCLUDING}'
+        rf'{SPECIAL_DAYS}\s+{YEAR}',
+        re.IGNORECASE
+    )
+
+    match = pattern_years_special_day.search(term_str)
+    if match:
+        years = parse_word_number(match.group(1))
+        special_day = match.group(2)
+        year = match.group(3)
+        start_date = resolve_special_day(special_day, year)
+        if years and start_date:
+            expiry_date = _calculate_expiry(start_date, years)
+            return _build_result(start_date, expiry_date, years)
+
+    # Pattern 4c: "[commencing|beginning] on DD Month YYYY for a term of X years"
+    # Example: "commencing on 10 may 2013 for a term of 125 years"
+    pattern_commencing_for_term = re.compile(
+        rf'(?:commencing|beginning)\s+{ON}{AND_INCLUDING}{DATE_PATTERN}\s+'
+        rf'for\s+(?:a\s+term\s+of\s+)?{YEARS_NUM}\s*years?',
+        re.IGNORECASE
+    )
+
+    match = pattern_commencing_for_term.search(term_str)
+    if match:
+        start_date = parse_date(match.group(1), match.group(2), match.group(3))
+        years = parse_word_number(match.group(4))
+        if start_date and years:
+            expiry_date = _calculate_expiry(start_date, years)
+            return _build_result(start_date, expiry_date, years)
+
+    # Pattern 4d: "from and including DD Month YYYY for X years"
+    # Example: "from and including 1 October 2002 for 20 years"
+    pattern_from_for_years = re.compile(
+        rf'from\s+{AND_INCLUDING}{DATE_PATTERN}\s+'
+        rf'for\s+{YEARS_NUM}\s*years?',
+        re.IGNORECASE
+    )
+
+    match = pattern_from_for_years.search(term_str)
+    if match:
+        start_date = parse_date(match.group(1), match.group(2), match.group(3))
+        years = parse_word_number(match.group(4))
+        if start_date and years:
+            expiry_date = _calculate_expiry(start_date, years)
+            return _build_result(start_date, expiry_date, years)
+
+    # ========================================================================
+    # PATTERN GROUP 5: Fallback patterns (missing keywords)
+    # ========================================================================
+
+    # Pattern 5a: "X years DD Month YYYY" (missing 'from')
+    # Example: "999 years 25 March 1896"
+    pattern_years_date_no_from = re.compile(
+        rf'^(?:a\s+term\s+of\s+)?{YEARS_NUM}\s*years?\s+'
+        rf'{DATE_PATTERN}',
+        re.IGNORECASE
+    )
+
+    match = pattern_years_date_no_from.search(term_str)
+    if match:
+        years = parse_word_number(match.group(1))
+        start_date = parse_date(match.group(2), match.group(3), match.group(4))
+        if years and start_date:
+            expiry_date = _calculate_expiry(start_date, years)
+            return _build_result(start_date, expiry_date, years)
+
+    # Pattern 5b: "X from DD Month YYYY" (missing "years")
+    # Example: "999 from 27 April 2006"
+    pattern_num_from_date = re.compile(
+        rf'^(\d{{1,4}})\s+from\s+{THE}?{AND_INCLUDING}{DATE_PATTERN}',
+        re.IGNORECASE
+    )
+
+    match = pattern_num_from_date.search(term_str)
+    if match:
+        years = parse_word_number(match.group(1))
+        start_date = parse_date(match.group(2), match.group(3), match.group(4))
+        if years and start_date:
+            expiry_date = _calculate_expiry(start_date, years)
+            return _build_result(start_date, expiry_date, years)
 
     return None
 
