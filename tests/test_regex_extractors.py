@@ -591,6 +591,81 @@ class TestParseLeaseTerm(unittest.TestCase):
         self.assertEqual(result['expiry_date'], datetime(2266, 9, 28))
         self.assertEqual(result['tenure_years'], 250)
 
+    # --- New test cases for starting, commencing from, expiring, up to ---
+    def test_years_starting_and_ending(self):
+        """Test: '125 years starting on 1 January 2019 and ending on 31 December 2144'"""
+        result = parse_lease_term("125 years starting on 1 January 2019 and ending on 31 December 2144")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(2019, 1, 1))
+        self.assertEqual(result['expiry_date'], datetime(2144, 12, 31))
+        self.assertEqual(result['tenure_years'], 125)
+
+    def test_years_commencing_from_and_including(self):
+        """Test: '999 years commencing from and including 13 September 2018'"""
+        result = parse_lease_term("999 years commencing from and including 13 September 2018")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(2018, 9, 13))
+        self.assertEqual(result['expiry_date'], datetime(3017, 9, 13))
+        self.assertEqual(result['tenure_years'], 999)
+
+    def test_years_expiring_on(self):
+        """Test: '147 years expiring on 23 June 2161'"""
+        result = parse_lease_term("147 years expiring on 23 June 2161")
+
+        self.assertIsNotNone(result)
+        # Start date calculated by subtracting 147 years from expiry
+        self.assertEqual(result['start_date'], datetime(2014, 6, 23))
+        self.assertEqual(result['expiry_date'], datetime(2161, 6, 23))
+        self.assertEqual(result['tenure_years'], 147)
+
+    def test_years_expiring_on_2(self):
+        """Test: '125 years expiring on 20 February 2125'"""
+        result = parse_lease_term("125 years expiring on 20 February 2125")
+
+        self.assertIsNotNone(result)
+        # Start date calculated by subtracting 125 years from expiry
+        self.assertEqual(result['start_date'], datetime(2000, 2, 20))
+        self.assertEqual(result['expiry_date'], datetime(2125, 2, 20))
+        self.assertEqual(result['tenure_years'], 125)
+
+    def test_starting_and_ending_no_years(self):
+        """Test: 'Starting on 20 December 2024 and ending on 19 December 2039'"""
+        result = parse_lease_term("Starting on 20 December 2024 and ending on 19 December 2039")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(2024, 12, 20))
+        self.assertEqual(result['expiry_date'], datetime(2039, 12, 19))
+        self.assertEqual(result['tenure_years'], 14)
+
+    def test_years_from_and_including_the(self):
+        """Test: '125 years from and including the 01 March 2023'"""
+        result = parse_lease_term("125 years from and including the 01 March 2023")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(2023, 3, 1))
+        self.assertEqual(result['expiry_date'], datetime(2148, 3, 1))
+        self.assertEqual(result['tenure_years'], 125)
+
+    def test_from_up_to_and_including(self):
+        """Test: 'From and including 12 August 2024 up to and including 30 September 2031'"""
+        result = parse_lease_term("From and including 12 August 2024 up to and including 30 September 2031")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(2024, 8, 12))
+        self.assertEqual(result['expiry_date'], datetime(2031, 9, 30))
+        self.assertEqual(result['tenure_years'], 7)
+
+    def test_years_starting_on(self):
+        """Test: '99 years starting on 3 December 2024'"""
+        result = parse_lease_term("99 years starting on 3 December 2024")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result['start_date'], datetime(2024, 12, 3))
+        self.assertEqual(result['expiry_date'], datetime(2123, 12, 3))
+        self.assertEqual(result['tenure_years'], 99)
+
 
 class TestParseFractionalYears(unittest.TestCase):
     """Tests for the parse_fractional_years helper function."""

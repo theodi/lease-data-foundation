@@ -54,14 +54,14 @@ ON = r'(?:on\s+)?'
 # Optional "the" word
 THE = r'(?:the\s+)?'
 
-# Start keywords: from, commencing, beginning
-START_KEYWORD = r'(?:from|commencing|beginning)'
+# Start keywords: from, commencing, beginning, starting
+START_KEYWORD = r'(?:from|commencing|beginning|starting)'
 
-# Optional start prefix variations: "on and from", "from", "commencing on", "beginning on"
-START_PREFIX = rf'(?:{START_KEYWORD}\s+{ON}|on\s+and\s+from\s+)'
+# Optional start prefix variations: "on and from", "from", "commencing on", "beginning on", "commencing from", "from and including"
+START_PREFIX = rf'(?:{START_KEYWORD}\s+(?:{ON}|from\s+)?{AND_INCLUDING}|on\s+and\s+from\s+)'
 
 # End keywords
-END_KEYWORD = r'(?:to|until|ending|expiring|and\s+ending|and\s+expiring)'
+END_KEYWORD = r'(?:to|until|up\s+to|ending|expiring|and\s+ending|and\s+expiring)'
 
 # Days/months modifier: "less X days", "(less X days)", "plus X days", "and X days"
 DAYS_WORD = rf'(\d+|{WORD_NUMBERS})'
@@ -389,7 +389,7 @@ def parse_lease_term(term_str: str) -> Optional[Dict[str, Any]]:
     pattern_fractional_years = re.compile(
         rf'^(?:a\s+term\s+of\s+)?{FRACTIONAL_YEARS}\s*years?'
         rf'{LESS_DAYS_MOD}'
-        rf'\s+{START_PREFIX}{THE}?{AND_INCLUDING}'
+        rf'\s+{START_PREFIX}{THE}?'
         rf'(?:{DATE_PATTERN}|{SPECIAL_DAYS}\s+{YEAR})',
         re.IGNORECASE
     )
@@ -418,7 +418,7 @@ def parse_lease_term(term_str: str) -> Optional[Dict[str, Any]]:
     pattern_less_months = re.compile(
         rf'^(?:a\s+term\s+of\s+)?{YEARS_NUM}\s*years?'
         rf'\s+less\s+{MONTHS_WORD}\s+months?'
-        rf'\s+{START_PREFIX}{THE}?{AND_INCLUDING}{DATE_PATTERN}',
+        rf'\s+{START_PREFIX}{THE}?{DATE_PATTERN}',
         re.IGNORECASE
     )
 
@@ -438,7 +438,7 @@ def parse_lease_term(term_str: str) -> Optional[Dict[str, Any]]:
     pattern_plus_days = re.compile(
         rf'^(?:a\s+term\s+of\s+)?{YEARS_NUM}\s*years?'
         rf'\s+(?:plus|and)\s+{DAYS_WORD}\s+days?'
-        rf'\s+{START_PREFIX}{THE}?{AND_INCLUDING}{DATE_PATTERN}',
+        rf'\s+{START_PREFIX}{THE}?{DATE_PATTERN}',
         re.IGNORECASE
     )
 
@@ -473,7 +473,7 @@ def parse_lease_term(term_str: str) -> Optional[Dict[str, Any]]:
     # PATTERN GROUP 4: Simple years + start date (no modifiers)
     # ========================================================================
 
-    # Pattern 4a: "X years [from|commencing|beginning|on and from] [the] [and including] DD Month YYYY"
+    # Pattern 4a: "X years [from|commencing|beginning|on and from] [and including] [the] DD Month YYYY"
     # Examples:
     #   "99 years from 24 June 1862"
     #   "999 years from the 22 December 1953"
@@ -482,9 +482,10 @@ def parse_lease_term(term_str: str) -> Optional[Dict[str, Any]]:
     #   "215 years beginning on and including 24 June 1988"
     #   "15 years commencing on and including 20th February 2015"
     #   "Ten years beginning on and including 6 December 2016" (word number)
+    #   "125 years from and including the 01 March 2023"
     pattern_years_from_date = re.compile(
         rf'^(?:a\s+term\s+of\s+)?{YEARS_NUM}\s*years?\s+'
-        rf'{START_PREFIX}{THE}?{AND_INCLUDING}{DATE_PATTERN}',
+        rf'{START_PREFIX}{THE}?{DATE_PATTERN}',
         re.IGNORECASE
     )
 
@@ -500,7 +501,7 @@ def parse_lease_term(term_str: str) -> Optional[Dict[str, Any]]:
     # Example: "99 years from Christmas Day 1900"
     pattern_years_special_day = re.compile(
         rf'^(?:a\s+term\s+of\s+)?{YEARS_NUM}\s*years?\s+'
-        rf'{START_PREFIX}{THE}?{AND_INCLUDING}'
+        rf'{START_PREFIX}{THE}?'
         rf'{SPECIAL_DAYS}\s+{YEAR}',
         re.IGNORECASE
     )
@@ -547,6 +548,23 @@ def parse_lease_term(term_str: str) -> Optional[Dict[str, Any]]:
             expiry_date = _calculate_expiry(start_date, years)
             return _build_result(start_date, expiry_date, years)
 
+    # Pattern 4e: "X years expiring on DD Month YYYY" (only expiry date given, calculate start)
+    # Examples: "147 years expiring on 23 June 2161", "125 years expiring on 20 February 2125"
+    pattern_years_expiring = re.compile(
+        rf'^(?:a\s+term\s+of\s+)?{YEARS_NUM}\s*years?\s+'
+        rf'expiring\s+{ON}{AND_INCLUDING}{DATE_PATTERN}',
+        re.IGNORECASE
+    )
+
+    match = pattern_years_expiring.search(term_str)
+    if match:
+        years = parse_word_number(match.group(1))
+        expiry_date = parse_date(match.group(2), match.group(3), match.group(4))
+        if years and expiry_date:
+            # Calculate start date by subtracting years from expiry
+            start_date = expiry_date - relativedelta(years=years)
+            return _build_result(start_date, expiry_date, years)
+
     # ========================================================================
     # PATTERN GROUP 5: Fallback patterns (missing keywords)
     # ========================================================================
@@ -581,6 +599,15 @@ def parse_lease_term(term_str: str) -> Optional[Dict[str, Any]]:
         if years and start_date:
             expiry_date = _calculate_expiry(start_date, years)
             return _build_result(start_date, expiry_date, years)
+
+    # ========================================================================
+    # FALLBACK: Remove parenthetical text and retry
+    # ========================================================================
+    # If all patterns failed and there's text in parentheses, remove it and retry
+    # Example: "99 years (renewable) from 24 June 1862" -> "99 years from 24 June 1862"
+    term_without_parens = re.sub(r'\s*\([^)]*\)', '', term_str).strip()
+    if term_without_parens != term_str:
+        return parse_lease_term(term_without_parens)
 
     return None
 
