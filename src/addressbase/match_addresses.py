@@ -1000,6 +1000,125 @@ def create_postgres_index(pg_conn, pg_cursor):
         pg_conn.rollback()
 
 
+def post_process_duplicate_uids():
+    """
+    Post-process CSV files to handle duplicate UIDs.
+
+    When multiple MongoDB documents share the same UID, some may be matched
+    and some may not. This function:
+    1. Reads found_addresses.csv to get all matched UIDs and their data
+    2. Reads not_found.csv to find records with UIDs that have matches
+    3. Removes those records from not_found.csv
+    4. Adds them to found_addresses.csv with the matched data
+
+    This ensures that if any document with a given UID is matched,
+    all documents with that UID are considered matched.
+    """
+    logger.info("Starting post-processing for duplicate UIDs")
+
+    # Check if both files exist
+    if not os.path.exists(FOUND_CSV):
+        logger.warning(f"Found CSV file does not exist: {FOUND_CSV}")
+        return
+
+    if not os.path.exists(NOT_FOUND_CSV):
+        logger.warning(f"Not found CSV file does not exist: {NOT_FOUND_CSV}")
+        return
+
+    # Step 1: Read found_addresses.csv and build a map of uid -> first matched record
+    uid_to_found_data = {}
+    found_headers = None
+    found_records = []
+
+    with open(FOUND_CSV, "r", newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        found_headers = next(reader, None)
+        if not found_headers:
+            logger.warning("Found CSV has no headers")
+            return
+
+        # Find the index of 'uid' column
+        try:
+            uid_idx = found_headers.index("uid")
+        except ValueError:
+            logger.error("'uid' column not found in found_addresses.csv")
+            return
+
+        for row in reader:
+            if len(row) > uid_idx:
+                uid = row[uid_idx]
+                found_records.append(row)
+                # Store the first occurrence of each UID
+                if uid not in uid_to_found_data:
+                    uid_to_found_data[uid] = row
+
+    logger.info(f"Loaded {len(found_records)} found records with {len(uid_to_found_data)} unique UIDs")
+
+    # Step 2: Read not_found.csv and separate records
+    not_found_headers = None
+    remaining_not_found = []
+    records_to_move = []
+
+    with open(NOT_FOUND_CSV, "r", newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        not_found_headers = next(reader, None)
+        if not not_found_headers:
+            logger.warning("Not found CSV has no headers")
+            return
+
+        # Find the index of 'uid' column in not_found
+        try:
+            nf_uid_idx = not_found_headers.index("uid")
+        except ValueError:
+            logger.error("'uid' column not found in not_found.csv")
+            return
+
+        for row in reader:
+            if len(row) > nf_uid_idx:
+                uid = row[nf_uid_idx]
+                if uid in uid_to_found_data:
+                    # This UID has a match - create a new found record
+                    # Copy the matched data but update original_apd with this record's info
+                    matched_data = uid_to_found_data[uid].copy()
+
+                    # Find original_apd index in found headers and apd_original in not_found
+                    try:
+                        original_apd_idx = found_headers.index("original_apd")
+                        nf_apd_original_idx = not_found_headers.index("apd_original")
+                        # Update original_apd with this record's address
+                        matched_data[original_apd_idx] = row[nf_apd_original_idx]
+                    except ValueError:
+                        pass  # Keep the original apd if columns not found
+
+                    records_to_move.append(matched_data)
+                else:
+                    remaining_not_found.append(row)
+
+    if not records_to_move:
+        logger.info("No duplicate UID records to move")
+        return
+
+    logger.info(f"Moving {len(records_to_move)} records from not_found to found")
+
+    # Step 3: Append moved records to found_addresses.csv
+    with open(FOUND_CSV, "a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        for row in records_to_move:
+            writer.writerow(row)
+
+    # Step 4: Rewrite not_found.csv without the moved records
+    with open(NOT_FOUND_CSV, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(not_found_headers)
+        for row in remaining_not_found:
+            writer.writerow(row)
+
+    logger.info(f"Post-processing complete. Moved {len(records_to_move)} records. "
+                f"Remaining not found: {len(remaining_not_found)}")
+
+
 if __name__ == "__main__":
-    main()
+    # main()
+    # Run post-processing after main matching is complete
+    post_process_duplicate_uids()
 
