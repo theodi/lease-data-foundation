@@ -8,6 +8,7 @@ to CSV files, with support for resuming after failures.
 
 import csv
 import os
+import re
 import logging
 from typing import Optional, Generator
 from pathlib import Path
@@ -294,7 +295,7 @@ def process_batch(
 
     for doc in batch:
         uid = str(doc.get("uid", "")).strip()
-        apd = str(doc.get("apd", "")).strip()
+        apd = normalise_address(str(doc.get("apd", "")).strip())
         pc = str(doc.get("pc", "")).strip()
 
         if not apd:
@@ -315,7 +316,7 @@ def process_batch(
                 "uid": uid,
                 "apd": apd,
                 "pc": postcode or pc,
-                "house_number": house_number,
+                "house_number": normalise_house_number(house_number),
                 "road": road
             })
         except Exception as e:
@@ -343,6 +344,36 @@ def process_batch(
 
     return len(found_records), len(not_found_records), found_header_written
 
+def normalise_address(address: str) -> str:
+    """
+    Normalise address string for better parsing.
+
+    Args:
+        address: The original address string
+    """
+    normalized_address = address.strip()
+    # remove flat related info which can interfere with parsing
+    if address.count(',') > 1:
+        parts = [part.strip() for part in address.split(',')]
+        normalized_address =', '.join(parts[1:])
+
+    return normalized_address
+
+def normalise_house_number(house_number: str) -> str:
+    """
+    Normalise house number for better matching.
+
+    Args:
+        house_number: The original house number string
+    """
+    normalized_house_number = house_number.strip()
+    if "-" in normalized_house_number:
+        # 153-157 NEW BOND STREET -> 153 NEW BOND STREET
+        normalized_house_number = normalized_house_number.split("-")[0].strip()
+    # if house number contains letters, remove them (e.g. 3B -> 3)
+    if any(char.isalpha() for char in normalized_house_number):
+        normalized_house_number = re.sub(r'[A-Za-z]', '', normalized_house_number)
+    return normalized_house_number
 
 def main(
     mongo_database: str = "leases",
