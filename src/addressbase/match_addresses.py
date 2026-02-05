@@ -93,7 +93,7 @@ def create_csv_writers():
         # We'll write the header once we know the ab_plus columns
         pass
     if not not_found_file_exists:
-        not_found_writer.writerow(["uid", "apd", "pc"])
+        not_found_writer.writerow(["uid", "apd_original", "apd", "pc", "uprn"])
 
     return found_file, not_found_file, found_writer, not_found_writer, found_file_exists
 
@@ -126,7 +126,8 @@ def fetch_mongo_documents(
     # _id is always monotonically increasing in MongoDB
     cursor = collection.find(
         query,
-        {"uid": 1, "apd": 1, "pc": 1}
+        # {"uid": 1, "uprn":1, "rpd": 1, "pc": 1}
+        {"uid": 1, "uprn":1, "apd": 1, "pc": 1}
     ).sort("_id", 1).batch_size(batch_size)
 
     batch = []
@@ -148,10 +149,12 @@ def batch_lookup_addresses(
     Perform batch lookup of addresses in PostgreSQL.
 
     Uses a single query with UNNEST for efficient batch lookups.
+    First tries UPRN matching (fastest), then falls back to address-based matching.
+    Supports matching by postcode or by city/post_town when postcode is unavailable.
 
     Args:
         pg_cursor: PostgreSQL cursor
-        records: List of records with uid, house_number, road, pc
+        records: List of records with uid, house_number, road, pc, uprn, and optionally city
 
     Returns:
         Tuple of (found_records, not_found_records)
@@ -159,6 +162,141 @@ def batch_lookup_addresses(
     if not records:
         return [], []
 
+    found_records = []
+    remaining_records = records
+
+    # Step 1: Try UPRN matching first (fastest approach)
+    uprn_records = [r for r in remaining_records if r.get("uprn")]
+    non_uprn_records = [r for r in remaining_records if not r.get("uprn")]
+
+    if uprn_records:
+        uprn_found, uprn_not_found = _batch_lookup_by_uprn(pg_cursor, uprn_records)
+        found_records.extend(uprn_found)
+        # Records not found by UPRN will be tried with address matching
+        remaining_records = uprn_not_found + non_uprn_records
+    else:
+        remaining_records = non_uprn_records
+
+    # Step 2: Separate remaining records by matching strategy
+    postcode_records = [r for r in remaining_records if r.get("pc")]
+    city_records = [r for r in remaining_records if not r.get("pc") and r.get("city")]
+    no_match_records = [r for r in remaining_records if not r.get("pc") and not r.get("city")]
+
+    not_found_records = list(no_match_records)  # These cannot be matched
+
+    # Step 3: Process postcode-based lookups
+    if postcode_records:
+        postcode_found, postcode_not_found = _batch_lookup_by_postcode(pg_cursor, postcode_records)
+        found_records.extend(postcode_found)
+        not_found_records.extend(postcode_not_found)
+
+    # Step 4: Process city-based lookups (using post_town)
+    if city_records:
+        city_found, city_not_found = _batch_lookup_by_city(pg_cursor, city_records)
+        found_records.extend(city_found)
+        not_found_records.extend(city_not_found)
+
+    return found_records, not_found_records
+
+
+def _batch_lookup_by_uprn(
+    pg_cursor,
+    records: list[dict]
+) -> tuple[list[dict], list[dict]]:
+    """
+    Perform batch lookup of addresses by UPRN (fastest matching method).
+
+    Args:
+        pg_cursor: PostgreSQL cursor
+        records: List of records with uprn field
+
+    Returns:
+        Tuple of (found_records, not_found_records)
+    """
+    # Prepare data for batch query
+    lookup_data = []
+    record_map = {}
+
+    for rec in records:
+        uprn = rec["uprn"]
+        lookup_data.append((rec["uid"], uprn))
+        if uprn not in record_map:
+            record_map[uprn] = []
+        record_map[uprn].append(rec)
+
+    # Remove duplicates for the query (keep unique UPRNs)
+    unique_uprns = list(set(rec["uprn"] for rec in records))
+
+    if not unique_uprns:
+        return [], records
+
+    # Create temporary table for batch lookup
+    pg_cursor.execute("""
+        CREATE TEMP TABLE IF NOT EXISTS lookup_batch_uprn (
+            uprn BIGINT
+        ) ON COMMIT DELETE ROWS
+    """)
+
+    # Clear and insert lookup data
+    pg_cursor.execute("TRUNCATE lookup_batch_uprn")
+
+    execute_values(
+        pg_cursor,
+        "INSERT INTO lookup_batch_uprn (uprn) VALUES %s",
+        [(int(u),) for u in unique_uprns if u and str(u).isdigit()],
+        page_size=1000
+    )
+
+    # Perform batch lookup by UPRN
+    pg_cursor.execute("""
+        SELECT 
+            lb.uprn as lookup_uprn,
+            ab.*
+        FROM lookup_batch_uprn lb
+        JOIN ab_plus ab ON ab.uprn = lb.uprn
+    """)
+
+    found_by_uprn = {
+        row["lookup_uprn"]: dict(row)
+        for row in pg_cursor.fetchall()
+    }
+
+    found_records = []
+    not_found_records = []
+
+    for rec in records:
+        uprn = rec["uprn"]
+        # Convert to int for lookup since keys are BIGINT
+        uprn_key = int(uprn) if uprn and str(uprn).isdigit() else None
+        if uprn_key and uprn_key in found_by_uprn:
+            result = found_by_uprn[uprn_key].copy()
+            # Remove lookup columns
+            result.pop("lookup_uprn", None)
+            result["uid"] = rec["uid"]
+            result["original_apd"] = rec["apd"]
+            result["uprn"] = rec["uprn"]
+            found_records.append(result)
+        else:
+            not_found_records.append(rec)
+
+    return found_records, not_found_records
+
+
+
+def _batch_lookup_by_postcode(
+    pg_cursor,
+    records: list[dict]
+) -> tuple[list[dict], list[dict]]:
+    """
+    Perform batch lookup of addresses by postcode.
+
+    Args:
+        pg_cursor: PostgreSQL cursor
+        records: List of records with postcode
+
+    Returns:
+        Tuple of (found_records, not_found_records)
+    """
     # Prepare data for batch query
     lookup_data = []
     record_map = {}
@@ -246,8 +384,103 @@ def batch_lookup_addresses(
             for row in pg_cursor.fetchall()
         }
 
-    # Combine results
+    # Combine exact match results
     all_found = {**found_by_number, **found_by_name}
+
+    # # Find keys still not found - try fuzzy house number matching
+    # still_not_found_keys = [k for k in not_found_keys if k not in found_by_name]
+    #
+    # found_by_fuzzy = {}
+    # if still_not_found_keys:
+    #     # Prepare data with base numbers for fuzzy matching
+    #     fuzzy_lookups = []
+    #     for house_num, road, pc in still_not_found_keys:
+    #         base_num = extract_base_number(house_num)
+    #         fuzzy_lookups.append((house_num, base_num, road, pc))
+    #
+    #     # Create temp table for fuzzy lookup
+    #     pg_cursor.execute("""
+    #         CREATE TEMP TABLE IF NOT EXISTS lookup_batch_fuzzy (
+    #             original_house_number TEXT,
+    #             base_number TEXT,
+    #             road TEXT,
+    #             postcode TEXT
+    #         ) ON COMMIT DELETE ROWS
+    #     """)
+    #
+    #     pg_cursor.execute("TRUNCATE lookup_batch_fuzzy")
+    #     execute_values(
+    #         pg_cursor,
+    #         "INSERT INTO lookup_batch_fuzzy (original_house_number, base_number, road, postcode) VALUES %s",
+    #         fuzzy_lookups,
+    #         page_size=1000
+    #     )
+    #
+    #     # Fuzzy match: base number matches start of building_number OR building_number matches start of house_number
+    #     # This handles: 85A->85, 1->1A, 153-157->153
+    #     pg_cursor.execute("""
+    #         SELECT DISTINCT ON (lb.original_house_number, lb.road, lb.postcode)
+    #             lb.original_house_number as lookup_house_number,
+    #             lb.road as lookup_road,
+    #             lb.postcode as lookup_postcode,
+    #             ab.*
+    #         FROM lookup_batch_fuzzy lb
+    #         JOIN ab_plus ab ON
+    #             UPPER(ab.thoroughfare) = UPPER(lb.road) AND
+    #             UPPER(ab.postcode) = UPPER(lb.postcode) AND
+    #             (
+    #                 -- Case 1: Text has suffix (85A), SQL doesn't (85)
+    #                 UPPER(ab.building_number) = UPPER(lb.base_number) OR
+    #                 -- Case 2: Text doesn't have suffix (1), SQL does (1A)
+    #                 UPPER(ab.building_number) LIKE UPPER(lb.base_number) || '%'
+    #             )
+    #     """)
+    #
+    #     found_by_fuzzy = {
+    #         (row["lookup_house_number"], row["lookup_road"], row["lookup_postcode"]): dict(row)
+    #         for row in pg_cursor.fetchall()
+    #     }
+    #
+    #     # Also try fuzzy matching on building_name for remaining
+    #     remaining_keys = [k for k in still_not_found_keys if (k[0], k[1], k[2]) not in found_by_fuzzy]
+    #
+    #     if remaining_keys:
+    #         fuzzy_lookups_remaining = []
+    #         for house_num, road, pc in remaining_keys:
+    #             base_num = extract_base_number(house_num)
+    #             fuzzy_lookups_remaining.append((house_num, base_num, road, pc))
+    #
+    #         pg_cursor.execute("TRUNCATE lookup_batch_fuzzy")
+    #         execute_values(
+    #             pg_cursor,
+    #             "INSERT INTO lookup_batch_fuzzy (original_house_number, base_number, road, postcode) VALUES %s",
+    #             fuzzy_lookups_remaining,
+    #             page_size=1000
+    #         )
+    #
+    #         pg_cursor.execute("""
+    #             SELECT DISTINCT ON (lb.original_house_number, lb.road, lb.postcode)
+    #                 lb.original_house_number as lookup_house_number,
+    #                 lb.road as lookup_road,
+    #                 lb.postcode as lookup_postcode,
+    #                 ab.*
+    #             FROM lookup_batch_fuzzy lb
+    #             JOIN ab_plus ab ON
+    #                 UPPER(ab.thoroughfare) = UPPER(lb.road) AND
+    #                 UPPER(ab.postcode) = UPPER(lb.postcode) AND
+    #                 (
+    #                     UPPER(ab.building_name) = UPPER(lb.base_number) OR
+    #                     UPPER(ab.building_name) LIKE UPPER(lb.base_number) || '%'
+    #                 )
+    #         """)
+    #
+    #         for row in pg_cursor.fetchall():
+    #             key = (row["lookup_house_number"], row["lookup_road"], row["lookup_postcode"])
+    #             if key not in found_by_fuzzy:
+    #                 found_by_fuzzy[key] = dict(row)
+    #
+    # # Combine all results
+    # all_found = {**found_by_number, **found_by_name, **found_by_fuzzy}
 
     found_records = []
     not_found_records = []
@@ -262,6 +495,228 @@ def batch_lookup_addresses(
             result.pop("lookup_postcode", None)
             result["uid"] = rec["uid"]
             result["original_apd"] = rec["apd"]
+            result["uprn"] = rec["uprn"]
+            found_records.append(result)
+        else:
+            not_found_records.append(rec)
+
+    return found_records, not_found_records
+
+
+def _batch_lookup_by_city(
+    pg_cursor,
+    records: list[dict]
+) -> tuple[list[dict], list[dict]]:
+    """
+    Perform batch lookup of addresses by city (matching against post_town).
+
+    Used when postcode is not available but city is.
+
+    Args:
+        pg_cursor: PostgreSQL cursor
+        records: List of records with city (no postcode)
+
+    Returns:
+        Tuple of (found_records, not_found_records)
+    """
+    # Prepare data for batch query
+    lookup_data = []
+    record_map = {}
+
+    for rec in records:
+        key = (rec["house_number"], rec["road"], rec["city"])
+        lookup_data.append(key)
+        if key not in record_map:
+            record_map[key] = []
+        record_map[key].append(rec)
+
+    # Remove duplicates for the query
+    unique_lookups = list(set(lookup_data))
+
+    if not unique_lookups:
+        return [], records
+
+    # Create temporary table for batch lookup
+    pg_cursor.execute("""
+        CREATE TEMP TABLE IF NOT EXISTS lookup_batch_city (
+            house_number TEXT,
+            road TEXT,
+            city TEXT
+        ) ON COMMIT DELETE ROWS
+    """)
+
+    # Clear and insert lookup data
+    pg_cursor.execute("TRUNCATE lookup_batch_city")
+
+    execute_values(
+        pg_cursor,
+        "INSERT INTO lookup_batch_city (house_number, road, city) VALUES %s",
+        unique_lookups,
+        page_size=1000
+    )
+
+    # Perform batch lookup for building_number using post_town
+    pg_cursor.execute("""
+        SELECT DISTINCT ON (lb.house_number, lb.road, lb.city)
+            lb.house_number as lookup_house_number,
+            lb.road as lookup_road,
+            lb.city as lookup_city,
+            ab.*
+        FROM lookup_batch_city lb
+        JOIN ab_plus ab ON 
+            UPPER(ab.building_number) = UPPER(lb.house_number) AND 
+            UPPER(ab.thoroughfare) = UPPER(lb.road) AND 
+            UPPER(ab.post_town) = UPPER(lb.city)
+    """)
+
+    found_by_number = {
+        (row["lookup_house_number"], row["lookup_road"], row["lookup_city"]): dict(row)
+        for row in pg_cursor.fetchall()
+    }
+
+    # Find keys not found by building_number
+    not_found_keys = [k for k in unique_lookups if k not in found_by_number]
+
+    # Perform batch lookup for building_name on remaining keys
+    found_by_name = {}
+    if not_found_keys:
+        pg_cursor.execute("TRUNCATE lookup_batch_city")
+        execute_values(
+            pg_cursor,
+            "INSERT INTO lookup_batch_city (house_number, road, city) VALUES %s",
+            not_found_keys,
+            page_size=1000
+        )
+
+        pg_cursor.execute("""
+            SELECT DISTINCT ON (lb.house_number, lb.road, lb.city)
+                lb.house_number as lookup_house_number,
+                lb.road as lookup_road,
+                lb.city as lookup_city,
+                ab.*
+            FROM lookup_batch_city lb
+            JOIN ab_plus ab ON 
+                UPPER(ab.building_name) = UPPER(lb.house_number) AND 
+                UPPER(ab.thoroughfare) = UPPER(lb.road) AND 
+                UPPER(ab.post_town) = UPPER(lb.city)
+        """)
+
+        found_by_name = {
+            (row["lookup_house_number"], row["lookup_road"], row["lookup_city"]): dict(row)
+            for row in pg_cursor.fetchall()
+        }
+
+    # Combine exact match results
+    all_found = {**found_by_number, **found_by_name}
+
+    # Find keys still not found - try fuzzy house number matching
+    still_not_found_keys = [k for k in not_found_keys if k not in found_by_name]
+
+    # found_by_fuzzy = {}
+    # if still_not_found_keys:
+    #     # Prepare data with base numbers for fuzzy matching
+    #     fuzzy_lookups = []
+    #     for house_num, road, city in still_not_found_keys:
+    #         base_num = extract_base_number(house_num)
+    #         fuzzy_lookups.append((house_num, base_num, road, city))
+    #
+    #     # Create temp table for fuzzy lookup
+    #     pg_cursor.execute("""
+    #         CREATE TEMP TABLE IF NOT EXISTS lookup_batch_city_fuzzy (
+    #             original_house_number TEXT,
+    #             base_number TEXT,
+    #             road TEXT,
+    #             city TEXT
+    #         ) ON COMMIT DELETE ROWS
+    #     """)
+    #
+    #     pg_cursor.execute("TRUNCATE lookup_batch_city_fuzzy")
+    #     execute_values(
+    #         pg_cursor,
+    #         "INSERT INTO lookup_batch_city_fuzzy (original_house_number, base_number, road, city) VALUES %s",
+    #         fuzzy_lookups,
+    #         page_size=1000
+    #     )
+    #
+    #     # Fuzzy match: base number matches start of building_number OR building_number matches start of house_number
+    #     pg_cursor.execute("""
+    #         SELECT DISTINCT ON (lb.original_house_number, lb.road, lb.city)
+    #             lb.original_house_number as lookup_house_number,
+    #             lb.road as lookup_road,
+    #             lb.city as lookup_city,
+    #             ab.*
+    #         FROM lookup_batch_city_fuzzy lb
+    #         JOIN ab_plus ab ON
+    #             UPPER(ab.thoroughfare) = UPPER(lb.road) AND
+    #             UPPER(ab.post_town) = UPPER(lb.city) AND
+    #             (
+    #                 -- Case 1: Text has suffix (85A), SQL doesn't (85)
+    #                 UPPER(ab.building_number) = UPPER(lb.base_number) OR
+    #                 -- Case 2: Text doesn't have suffix (1), SQL does (1A)
+    #                 UPPER(ab.building_number) LIKE UPPER(lb.base_number) || '%'
+    #             )
+    #     """)
+    #
+    #     found_by_fuzzy = {
+    #         (row["lookup_house_number"], row["lookup_road"], row["lookup_city"]): dict(row)
+    #         for row in pg_cursor.fetchall()
+    #     }
+    #
+    #     # Also try fuzzy matching on building_name for remaining
+    #     remaining_keys = [k for k in still_not_found_keys if (k[0], k[1], k[2]) not in found_by_fuzzy]
+    #
+    #     if remaining_keys:
+    #         fuzzy_lookups_remaining = []
+    #         for house_num, road, city in remaining_keys:
+    #             base_num = extract_base_number(house_num)
+    #             fuzzy_lookups_remaining.append((house_num, base_num, road, city))
+    #
+    #         pg_cursor.execute("TRUNCATE lookup_batch_city_fuzzy")
+    #         execute_values(
+    #             pg_cursor,
+    #             "INSERT INTO lookup_batch_city_fuzzy (original_house_number, base_number, road, city) VALUES %s",
+    #             fuzzy_lookups_remaining,
+    #             page_size=1000
+    #         )
+    #
+    #         pg_cursor.execute("""
+    #             SELECT DISTINCT ON (lb.original_house_number, lb.road, lb.city)
+    #                 lb.original_house_number as lookup_house_number,
+    #                 lb.road as lookup_road,
+    #                 lb.city as lookup_city,
+    #                 ab.*
+    #             FROM lookup_batch_city_fuzzy lb
+    #             JOIN ab_plus ab ON
+    #                 UPPER(ab.thoroughfare) = UPPER(lb.road) AND
+    #                 UPPER(ab.post_town) = UPPER(lb.city) AND
+    #                 (
+    #                     UPPER(ab.building_name) = UPPER(lb.base_number) OR
+    #                     UPPER(ab.building_name) LIKE UPPER(lb.base_number) || '%'
+    #                 )
+    #         """)
+    #
+    #         for row in pg_cursor.fetchall():
+    #             key = (row["lookup_house_number"], row["lookup_road"], row["lookup_city"])
+    #             if key not in found_by_fuzzy:
+    #                 found_by_fuzzy[key] = dict(row)
+
+    # Combine all results
+    # all_found = {**found_by_number, **found_by_name, **found_by_fuzzy}
+
+    found_records = []
+    not_found_records = []
+
+    for rec in records:
+        key = (rec["house_number"], rec["road"], rec["city"])
+        if key in all_found:
+            result = all_found[key].copy()
+            # Remove lookup columns
+            result.pop("lookup_house_number", None)
+            result.pop("lookup_road", None)
+            result.pop("lookup_city", None)
+            result["uid"] = rec["uid"]
+            result["original_apd"] = rec["apd"]
+            result["uprn"] = rec["uprn"]
             found_records.append(result)
         else:
             not_found_records.append(rec)
@@ -295,33 +750,46 @@ def process_batch(
 
     for doc in batch:
         uid = str(doc.get("uid", "")).strip()
-        apd = normalise_address(str(doc.get("apd", "")).strip())
+        # apd_original = str(doc.get("rpd", "")).strip()
+        apd_original = str(doc.get("apd", "")).strip()
+        apd = normalise_address(apd_original)
         pc = str(doc.get("pc", "")).strip()
+        uprn = str(doc.get("uprn", "")).strip()
 
         if not apd:
-            parse_errors.append({"uid": uid, "apd": apd, "pc": pc})
+            parse_errors.append({"uid": uid, "apd_original": apd_original, "apd": apd, "pc": pc, "uprn": uprn})
             continue
 
         try:
             parsed = parse_address_string(apd)
             house_number = parsed.get("house_number", "").strip()
-            postcode = parsed.get("postcode")
+            postcode = parsed.get("postcode", "").strip()
+            city = parsed.get("city", "").strip()
             road = parsed.get("road", "").strip()
 
             if not house_number or not road:
-                parse_errors.append({"uid": uid, "apd": apd, "pc": pc})
+                parse_errors.append({"uid": uid, "apd_original": apd_original, "apd": apd, "pc": pc, "uprn": uprn})
                 continue
+
+            # Determine the final postcode value
+            final_postcode = postcode or pc
+
+            # If no postcode available, use city for matching with post_town
+            use_city_match = not final_postcode and city
 
             records.append({
                 "uid": uid,
+                "apd_original": apd_original,
                 "apd": apd,
-                "pc": postcode or pc,
+                "pc": final_postcode,
+                "city": city if use_city_match else None,
                 "house_number": normalise_house_number(house_number),
-                "road": road
+                "road": road,
+                "uprn": uprn
             })
         except Exception as e:
             logger.warning(f"Failed to parse address '{apd}': {e}")
-            parse_errors.append({"uid": uid, "apd": apd, "pc": pc})
+            parse_errors.append({"uid": uid, "apd_original": apd_original, "apd": apd, "pc": pc, "uprn": uprn})
 
     # Batch lookup in PostgreSQL
     found_records, not_found_records = batch_lookup_addresses(pg_cursor, records)
@@ -340,7 +808,7 @@ def process_batch(
 
     # Write not found records
     for rec in not_found_records:
-        not_found_writer.writerow([rec["uid"], rec["apd"], rec["pc"]])
+        not_found_writer.writerow([rec["uid"], rec["apd_original"], rec["apd"], rec["pc"], rec.get("uprn", "")])
 
     return len(found_records), len(not_found_records), found_header_written
 
@@ -371,9 +839,37 @@ def normalise_house_number(house_number: str) -> str:
         # 153-157 NEW BOND STREET -> 153 NEW BOND STREET
         normalized_house_number = normalized_house_number.split("-")[0].strip()
     # if house number contains letters, remove them (e.g. 3B -> 3)
-    if any(char.isalpha() for char in normalized_house_number):
-        normalized_house_number = re.sub(r'[A-Za-z]', '', normalized_house_number)
+    # if any(char.isalpha() for char in normalized_house_number):
+    #     normalized_house_number = re.sub(r'[A-Za-z]', '', normalized_house_number)
     return normalized_house_number
+
+
+def extract_base_number(house_number: str) -> str:
+    """
+    Extract the base numeric part from a house number.
+
+    Examples:
+        "85A" -> "85"
+        "1" -> "1"
+        "153-157" -> "153"
+        "3B" -> "3"
+
+    Args:
+        house_number: The house number string
+
+    Returns:
+        The base numeric part of the house number
+    """
+    # First handle ranges (e.g., 153-157 -> 153)
+    if "-" in house_number:
+        house_number = house_number.split("-")[0].strip()
+
+    # Extract leading digits (e.g., 85A -> 85, 3B -> 3)
+    match = re.match(r'^(\d+)', house_number)
+    if match:
+        return match.group(1)
+
+    return house_number
 
 def main(
     mongo_database: str = "leases",
