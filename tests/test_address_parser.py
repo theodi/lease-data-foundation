@@ -3,6 +3,34 @@
 import unittest
 
 from src.addressbase.address_parser import parse_address_string
+from src.addressbase.match_addresses import extract_base_number
+
+
+class TestExtractBaseNumber(unittest.TestCase):
+    """Test cases for the extract_base_number function."""
+
+    def test_simple_number(self):
+        """Test extracting base from simple number."""
+        self.assertEqual(extract_base_number("1"), "1")
+        self.assertEqual(extract_base_number("85"), "85")
+        self.assertEqual(extract_base_number("153"), "153")
+
+    def test_number_with_letter_suffix(self):
+        """Test extracting base from number with letter suffix."""
+        self.assertEqual(extract_base_number("85A"), "85")
+        self.assertEqual(extract_base_number("1A"), "1")
+        self.assertEqual(extract_base_number("3B"), "3")
+        self.assertEqual(extract_base_number("7C"), "7")
+
+    def test_range_number(self):
+        """Test extracting base from range."""
+        self.assertEqual(extract_base_number("153-157"), "153")
+        self.assertEqual(extract_base_number("1-3"), "1")
+        self.assertEqual(extract_base_number("10-20"), "10")
+
+    def test_range_with_suffix(self):
+        """Test extracting base from range with suffix."""
+        self.assertEqual(extract_base_number("1A-1B"), "1")
 
 
 class TestAddressParser(unittest.TestCase):
@@ -61,7 +89,6 @@ class TestAddressParser(unittest.TestCase):
         self.assertEqual(result["postcode"], "E14 7DG")
 
     def test_address1(self):
-        """Test that parse_address_string returns a dictionary."""
         address = "3B BELSHAM STREET, LONDON E9 6NG"
         result = parse_address_string(address)
         print(result)
@@ -71,7 +98,6 @@ class TestAddressParser(unittest.TestCase):
         self.assertEqual(result["postcode"], "E9 6NG")
 
     def test_address2(self):
-        """Test that parse_address_string returns a dictionary."""
         address = "FLAT 2, 2 BELSHAM STREET, LONDON E9 6NG"
         result = parse_address_string(address)
         print(result)
@@ -83,7 +109,6 @@ class TestAddressParser(unittest.TestCase):
         self.assertEqual(result["postcode"], "E9 6NG")
 
     def test_address3(self):
-        """Test that parse_address_string returns a dictionary."""
         address = "UNIT B1, 2 BELSHAM STREET, LONDON E9 6NG"
         result = parse_address_string(address)
         print(result)
@@ -95,19 +120,22 @@ class TestAddressParser(unittest.TestCase):
         self.assertEqual(result["postcode"], "E9 6NG")
 
     def test_address4(self):
-        """Test that parse_address_string returns a dictionary."""
-        # address = "GARDEN FLAT, 2 TASKER ROAD, LONDON NW3 2YR"
-        address = "2 TASKER ROAD, LONDON NW3 2YR"
+        # address = "GROUND FLOOR SHOP PREMISES, TIME & LIFE BUILDING, 153-157 NEW BOND STREET, LONDON W1S 2TY"
+        address = "TIME & LIFE BUILDING, 153-157 NEW BOND STREET, LONDON W1S 2TY"
         result = parse_address_string(address)
         print(result)
 
-        self.assertEqual(result["unit"], "GARDEN FLAT")
-        self.assertEqual(result["house_number"], "2")
-        self.assertEqual(result["road"], "TASKER ROAD")
+        self.assertEqual(result["house"], "TIME & LIFE BUILDING")
+        self.assertEqual(result["house_number"], "153-157")
+        self.assertEqual(result["road"], "NEW BOND STREET")
         self.assertEqual(result["city"], "LONDON")
-        self.assertEqual(result["postcode"], "NW3 2YR")
+        self.assertEqual(result["postcode"], "W1S 2TY")
 
-
+    def test_address5(self):
+        """Test that parse_address_string returns a dictionary."""
+        address = "ARDLEIGH, COLCHESTER CO7 7WX"
+        result = parse_address_string(address)
+        print(result)
 
 if __name__ == "__main__":
     unittest.main()
