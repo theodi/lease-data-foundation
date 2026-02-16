@@ -1,7 +1,13 @@
 # Setup Guide
 
 ## AddressBase Setup Guide
-Download the installer from [EnterpriseDB](https://www.enterprisedb.com/downloads/postgres-postgresql-downloads). Use Stack Builder (included) after installation to select and install the PostGIS extension.
+Download the installer from [EnterpriseDB](https://www.enterprisedb.com/downloads/postgres-postgresql-downloads). 
+
+Use Stack Builder (included) after installation to select and install the PostGIS extension.
+
+```
+sudo -u postgres /Library/PostgreSQL/18/bin/pg_ctl -D /Library/PostgreSQL/18/data start
+```
 
 ### PGAdmin Setup (Optional)
 

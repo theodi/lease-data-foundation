@@ -131,9 +131,41 @@ class TestAddressParser(unittest.TestCase):
         self.assertEqual(result["city"], "LONDON")
         self.assertEqual(result["postcode"], "W1S 2TY")
 
+    def test_court_parsing(self):
+        address = "FLAT 10, SWAN COURT, 10 AGNES STREET, LONDON E14 7DG"
+        result = parse_address_string(address)
+        print(result)
+
+        self.assertEqual(result["unit"], "FLAT 10")
+        self.assertEqual(result["house"], "SWAN COURT")
+        self.assertEqual(result["house_number"], "10")
+        self.assertEqual(result["road"], "AGNES STREET")
+        self.assertEqual(result["city"], "LONDON")
+        self.assertEqual(result["postcode"], "E14 7DG")
+
+    def test_court_parsing2(self):
+        address = "35 ST KEYNA COURT TEMPLE STREET, KEYNSHAM, BRISTOL BS31 1HB"
+        result = parse_address_string(address)
+        print(result)
+
+        self.assertEqual(result["house"], "35 ST KEYNA COURT")
+        self.assertEqual(result["road"], "TEMPLE STREET")
+        self.assertEqual(result["postcode"], "BS31 1HB")
+
+    def test_lodge_parsing3(self):
+        address = "33, MILL GREEN LODGE RYLAND DRIVE, WITHAM CM8 1ZG"
+        result = parse_address_string(address)
+        print(result)
+
+        self.assertEqual(result["house"], "33 MILL GREEN LODGE")
+        self.assertEqual(result["road"], "RYLAND DRIVE")
+        self.assertEqual(result["postcode"], "CM8 1ZG")
+
+
+
     def test_address5(self):
         """Test that parse_address_string returns a dictionary."""
-        address = "ARDLEIGH, COLCHESTER CO7 7WX"
+        address = "4 MOXON STREET, LONDON W1U 4EW"
         result = parse_address_string(address)
         print(result)
 

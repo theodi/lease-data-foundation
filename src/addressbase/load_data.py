@@ -2,6 +2,7 @@ import os
 import psycopg2
 from psycopg2 import sql
 from dotenv import load_dotenv
+from src.addressbase.post_process_denormalizer import expand_building_number_ranges, expand_thoroughfare_st_variants
 
 # Load environment variables from .env file
 load_dotenv()
@@ -87,6 +88,12 @@ def setup_addressbase_plus():
 
     cur.close()
     conn.close()
+
+    print("--- Step 6: Expanding Building Number Ranges ---")
+    expand_building_number_ranges()
+
+    print("--- Step 7: Expanding ST. Thoroughfare Variants ---")
+    expand_thoroughfare_st_variants()
 
 
 def load_headerless_csvs(cur):
