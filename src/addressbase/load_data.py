@@ -39,7 +39,8 @@ def setup_addressbase_plus():
     print("--- Step 2: Creating Table with Exact Headers ---")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS ab_plus (
-            UPRN BIGINT PRIMARY KEY,
+            id BIGSERIAL PRIMARY KEY,
+            UPRN BIGINT,
             OS_ADDRESS_TOID TEXT,
             UDPRN INTEGER,
             ORGANISATION_NAME TEXT,

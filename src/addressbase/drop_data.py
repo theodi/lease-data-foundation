@@ -65,8 +65,8 @@ def drop_addressbase_database():
 
 if __name__ == "__main__":
     # Drop the entire database
-    # drop_addressbase_database()
+    drop_addressbase_database()
     # Default: only drop the table
-    # drop_addressbase_table()
+    drop_addressbase_table()
     print("\nTo drop the entire database, run: python drop_data.py --database")
 

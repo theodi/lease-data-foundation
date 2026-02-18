@@ -131,3 +131,10 @@ Errors:             2,398
 Time elapsed:       4.64 seconds
 Processing rate:    3922 docs/second
 
+
+=== ADDRESS MATCHING OPTIMIZATIONS (Feb 2026) ===
+
+Total records: 7,715,223
+Not Found: 1,126,521
+
+85.39% of addresses found in the dataset
