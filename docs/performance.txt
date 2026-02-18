@@ -138,3 +138,6 @@ Total records: 7,715,223
 Not Found: 1,126,521
 
 85.39% of addresses found in the dataset
+
+=== Update Mongo From CSV
+Completed in 8.2 minutes | Total updates: 5,928,835 | Total deletes: 659,867
