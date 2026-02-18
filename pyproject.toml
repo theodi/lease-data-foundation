@@ -13,6 +13,7 @@ dependencies = [
     "pymongo>=4.16.0",
     "python-dateutil>=2.9.0.post0",
     "python-dotenv>=1.2.1",
+    "requests>=2.31.0",
     "seaborn==0.13.2",
     "sentencepiece==0.2.1",
     "torch==2.9.1",

@@ -123,6 +123,81 @@ def get_missing_field_stats(
             mongo_client.close()
 
 
+def get_missing_location_count(
+    mongo_client: Optional[MongoDBClient] = None
+) -> int:
+    """
+    Count records that don't have a 'location' field.
+
+    Args:
+        mongo_client: Optional MongoDBClient instance (creates new one if not provided)
+
+    Returns:
+        Number of documents without the 'location' field
+    """
+    should_close = mongo_client is None
+
+    if mongo_client is None:
+        mongo_client = MongoDBClient(CONNECTION_STRING, DATABASE_NAME)
+        mongo_client.connect()
+
+    try:
+        collection = mongo_client.get_collection(COLLECTION_NAME)
+
+        count = collection.count_documents({
+            "$or": [
+                {"location": {"$exists": False}},
+                {"location": None},
+                {"location": ""}
+            ]
+        })
+
+        return count
+
+    finally:
+        if should_close:
+            mongo_client.close()
+
+
+def get_potential_commercial_without_address(
+    mongo_client: Optional[MongoDBClient] = None
+) -> int:
+    """
+    Count documents with tenure_years < 25 and no 'post_town' field.
+
+    These are records not mapped to AddressBase but potentially commercial.
+
+    Args:
+        mongo_client: Optional MongoDBClient instance (creates new one if not provided)
+
+    Returns:
+        Number of documents matching the criteria
+    """
+    should_close = mongo_client is None
+
+    if mongo_client is None:
+        mongo_client = MongoDBClient(CONNECTION_STRING, DATABASE_NAME)
+        mongo_client.connect()
+
+    try:
+        collection = mongo_client.get_collection(COLLECTION_NAME)
+
+        count = collection.count_documents({
+            "tenure_years": {"$lt": 25},
+            "$or": [
+                {"post_town": {"$exists": False}},
+                {"post_town": None},
+                {"post_town": ""}
+            ]
+        })
+
+        return count
+
+    finally:
+        if should_close:
+            mongo_client.close()
+
+
 def run_invalid_regex_query():
     """Run and display invalid regex records query."""
     print("Fetching records with regex_is_valid = False...")
@@ -169,6 +244,26 @@ def run_missing_start_date_query():
     print(f"    - Empty string: {t['empty_string']}")
 
 
+def run_missing_location_query():
+    """Run and display count of records without location field."""
+    print("Counting records without 'location' field...")
+    print()
+
+    count = get_missing_location_count()
+
+    print(f"Records without 'location' field: {count}")
+
+
+def run_potential_commercial_query():
+    """Run and display count of potential commercial records without AddressBase mapping."""
+    print("Counting potential commercial records (tenure_years < 25, no post_town)...")
+    print()
+
+    count = get_potential_commercial_without_address()
+
+    print(f"Potential commercial records without AddressBase mapping: {count}")
+
+
 def main():
     """Main entry point for testing queries."""
     print("=" * 60)
@@ -178,6 +273,11 @@ def main():
 
     # Uncomment the query you want to run:
     # run_invalid_regex_query()
+    ## regex parsing errors
+    # run_missing_start_date_query()
+    ## not mapped to addressbase
+    # run_missing_location_query()
+    # run_potential_commercial_query()
     run_missing_start_date_query()
 
     print()
