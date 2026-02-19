@@ -141,3 +141,17 @@ Not Found: 1,126,521
 
 === Update Mongo From CSV
 Completed in 8.2 minutes | Total updates: 5,928,835 | Total deletes: 659,867
+
+18.02.2026 Statistics:
+
+Lease parsing performance (99.21%):
+- Successfully parsed: 98.66% (90,024 missing parsed lease data)
+- 37,364 out of 95,285 missing parsed lease data records doesn't have a valid lease term to parse
+- So, 99.21% of records with valid lease term are successfully parsed
+
+AddressBase mapping performance (85.39%)
+- 1,003,254 commercial records deleted. New Total records: 7,715,223 - 1,003,254 = 6,711,969
+- 95.6% of records has geolocation (latitude/longitude)
+- Remaining potential commercial records: 197,995 records that are not mapped to AddressBase has tenure_years < 25
+
+

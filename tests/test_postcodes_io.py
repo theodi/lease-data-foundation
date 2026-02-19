@@ -601,6 +601,12 @@ class TestRealPostcodesIntegration(unittest.TestCase):
         # self.assertEqual(result["region"], "GREATER LONDON")
         # self.assertEqual(result["admin_district"], "LONDON")
 
+    def test_real_postcode4(self):
+        """Test real postcode lookup."""
+        self._skip_if_unavailable()
+        results = bulk_lookup_postcodes(["TN31 7PG"], self.session)
+        print(results)
+
     def test_real_bulk_lookup_multiple_postcodes(self):
         """Test bulk lookup with multiple real postcodes."""
         self._skip_if_unavailable()

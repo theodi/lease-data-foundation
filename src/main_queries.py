@@ -277,8 +277,7 @@ def main():
     # run_missing_start_date_query()
     ## not mapped to addressbase
     # run_missing_location_query()
-    # run_potential_commercial_query()
-    run_missing_start_date_query()
+    run_potential_commercial_query()
 
     print()
     print("-" * 60)

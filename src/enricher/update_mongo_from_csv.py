@@ -16,7 +16,7 @@ from typing import Optional
 
 import pandas as pd
 import requests
-from pymongo import UpdateOne, DeleteOne
+from pymongo import DeleteMany, UpdateMany
 from pymongo.errors import BulkWriteError
 from tqdm import tqdm
 
@@ -138,7 +138,7 @@ def process_chunk(
 
             if update_doc:
                 operations.append(
-                    UpdateOne(
+                    UpdateMany(
                         {"uid": uid},
                         {"$set": update_doc},
                     )
@@ -146,7 +146,7 @@ def process_chunk(
                 update_count += 1
         else:
             # Delete non-residential documents
-            operations.append(DeleteOne({"uid": uid}))
+            operations.append(DeleteMany({"uid": uid}))
             delete_count += 1
 
     # Execute bulk operations
@@ -534,7 +534,7 @@ def process_not_found_chunk(
         #     update_doc["post_town"] = str(post_town).upper()
 
         operations.append(
-            UpdateOne(
+            UpdateMany(
                 {"uid": uid},
                 {"$set": update_doc},
             )
@@ -701,12 +701,12 @@ def main():
     project_dir = Path(__file__).resolve().parent.parent.parent
     csv_path = project_dir / "data" / "found_addresses.csv"
 
-    # result = update_mongo_from_found_csv(
-    #     csv_path=str(csv_path),
-    #     database_name="leases",
-    #     collection_name="leases",
-    # )
-    # logger.info(f"Final result: {result}")
+    result = update_mongo_from_found_csv(
+        csv_path=str(csv_path),
+        database_name="leases",
+        collection_name="leases",
+    )
+    logger.info(f"Final result: {result}")
 
     notfound_csv_path = project_dir / "data" / "not_found.csv"
     update_mongo_from_not_found_csv(
