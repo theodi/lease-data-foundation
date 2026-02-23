@@ -13,7 +13,7 @@ def main():
     print("=" * 60)
     print("Phase 1: Regex Extraction")
     print("=" * 60)
-    # process_regex()
+    process_regex()
 
     print("\n")
     print("=" * 60)

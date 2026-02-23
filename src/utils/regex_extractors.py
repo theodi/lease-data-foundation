@@ -348,7 +348,7 @@ def _build_result(start_date: datetime, expiry_date: datetime, tenure_years) -> 
     }
 
 
-def _calculate_expiry(start_date: datetime, years: float, less_days: int = 0,
+def _calculate_expiry(start_date: datetime, years: float, less_days: int = 1,
                       plus_days: int = 0, less_months: int = 0, plus_months: int = 0) -> datetime:
     """Calculate expiry date from start date and tenure adjustments."""
     full_years = int(years)
