@@ -38,7 +38,25 @@ brew services start mongodb/brew/mongodb-community
 2. Click the Export Data tab.
 3. Select JSON (ensure "Export full collection" is checked) and save the file to your desktop.
 
+or For big size collections, use the command line:
+
+```
+mongodump \
+  --uri="mongodb://localhost:27017" \
+  --db=leases \
+  --collection=leases \
+  --out=./local_dump_24022026
+```
+
 ### Load dump to Atlas
+
+Warning: This will drop the existing collection in Atlas before importing the new data. Ensure you have a backup if needed.
+
+Warning: Check the indexes in Atlas before importing, as they may need to be recreated after the import.
+
+_id -> asc (1), Unique
+uid -> asc (1)
+pc -> asc (1)
 
 ```
 mongoimport --uri="mongodb+srv://<user>:<password>@luster0.dearuu.mongodb.net/leases" \
@@ -48,8 +66,11 @@ mongoimport --uri="mongodb+srv://<user>:<password>@luster0.dearuu.mongodb.net/le
             --drop
 ```
 
-or  if bson export is used
+or  if bson export (mongodump) is used (folder structure should be like: `./local_dump_24022026/leases/leases.bson`):
 
 ```
-mongorestore --uri="mongodb+srv://<user>:<password>@cluster0.dearuu.mongodb.net/leases" ./30012026
+mongorestore --uri="mongodb+srv://<user>:<password>@cluster0.dearuu.mongodb.net" \
+            --nsInclude="leases.leases" \
+            --drop \
+            ./local_dump_24022026
 ```

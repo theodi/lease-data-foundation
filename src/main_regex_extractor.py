@@ -122,12 +122,15 @@ def process_all_records():
 
                         if update_fields:
                             # Create bulk update operation
-                            bulk_operations.append(
-                                UpdateOne(
-                                    {"_id": record["_id"]},
-                                    {"$set": update_fields}
+                            if update_fields.get("regex_is_valid"):
+                                new_data = update_fields
+                                del new_data["regex_is_valid"]
+                                bulk_operations.append(
+                                    UpdateOne(
+                                        {"_id": record["_id"]},
+                                        {"$set": update_fields}
+                                    )
                                 )
-                            )
 
                             # Update statistics
                             if update_fields.get("regex_is_valid"):

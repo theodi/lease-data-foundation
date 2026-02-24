@@ -1,0 +1,26 @@
+==== Delete Debugging fields:
+
+Filter:
+{ "regex_is_valid": { "$exists": true } }
+
+Update:
+{ "$unset": { "regex_is_valid": "" } }
+
+
+Other fields to delete:
+- regex_parse_error
+- t5_is_valid [Don't delete this field. Used to tag t5 generated ones]
+
+==== Rename Fields:
+
+t5_expiry_date -> expiry_date
+t5_start_date -> start_date
+t5_tenure_years -> tenure_years
+
+Filter:
+{ "t5_expiry_date": { "$exists": true } }
+
+Update:
+{ "$rename": { "t5_expiry_date": "expiry_date" } }
+
+

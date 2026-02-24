@@ -110,7 +110,8 @@ class BatchT5Extractor:
         for i, (record, raw_output) in enumerate(zip(records, raw_outputs)):
             dol = record.get(DOL_FIELD)
             parsed = self._parse_and_validate(raw_output, dol)
-            results.append(parsed)
+            if not parsed.get("t5_is_valid"):
+                results.append(parsed)
 
         return results
 
@@ -158,9 +159,9 @@ class BatchT5Extractor:
         if is_valid:
             return {
                 "t5_is_valid": True,
-                "t5_start_date": parsed['start_date'],
-                "t5_expiry_date": parsed['expiry_date'],
-                "t5_tenure_years": parsed['tenure_years']
+                "start_date": parsed['start_date'],
+                "expiry_date": parsed['expiry_date'],
+                "tenure_years": parsed['tenure_years']
             }
         else:
             return {

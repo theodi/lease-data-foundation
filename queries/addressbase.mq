@@ -1,0 +1,20 @@
+==== List pc and ab_postcode are different
+
+{
+  "pc": { "$exists": true },
+  "ab_postcode": { "$exists": true },
+  "$expr": { "$ne": ["$pc", "$ab_postcode"] }
+}
+
+
+==== copy the value of ab_postcode into a new field called pc (only where pc is currently missing)
+
+Filter:
+{ "ab_postcode": { "$exists": true }, "pc": { "$exists": false } }
+
+Update:
+[
+  { "$set": { "pc": "$ab_postcode" } }
+]
+
+Note: The [ and ] brackets are mandatory here. They tell MongoDB to treat $ab_postcode as a field reference rather than a literal string starting with a dollar sign.
