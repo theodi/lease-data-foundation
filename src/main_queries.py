@@ -274,10 +274,10 @@ def main():
     # Uncomment the query you want to run:
     # run_invalid_regex_query()
     ## regex parsing errors
-    # run_missing_start_date_query()
+    run_missing_start_date_query()
     ## not mapped to addressbase
     # run_missing_location_query()
-    run_potential_commercial_query()
+    # run_potential_commercial_query()
 
     print()
     print("-" * 60)

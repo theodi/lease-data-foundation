@@ -1,0 +1,59 @@
+==== Create Leases_ext collection
+
+Mongosh (on Compass):
+
+db["leases"].aggregate([
+  {
+    $project: {
+      _id: 0,
+      lease_id: "$_id",
+      uid: 1,
+      expiry_date: 1,
+      start_date: 1,
+      tenure_years: 1,
+      ab_postcode: 1,
+      ab_uprn: 1,
+      building_number: 1,
+      class: 1,
+      latitude: 1,
+      longitude: 1,
+      location: 1,
+      post_town: 1,
+      thoroughfare: 1,
+      udprn: 1,
+      x_coordinate: 1,
+      y_coordinate: 1,
+      building_name: 1
+    }
+  },
+  {
+    $out: "leasesext"
+  }
+], { allowDiskUse: true })
+
+
+----- Delete data from leases
+db["leases"].updateMany(
+  {},
+  {
+    $unset: {
+      expiry_date: "",
+      start_date: "",
+      tenure_years: "",
+      ab_postcode: "",
+      ab_uprn: "",
+      building_number: "",
+      class: "",
+      latitude: "",
+      longitude: "",
+      location: "",
+      post_town: "",
+      thoroughfare: "",
+      udprn: "",
+      x_coordinate: "",
+      y_coordinate: "",
+      building_name: ""
+    }
+  },
+  { upsert: false }
+)
