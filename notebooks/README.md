@@ -40,12 +40,12 @@ Each document represents a UK leasehold property with comprehensive information 
 #### Core Fields (Primary for Analysis)
 
 | Field | Type | Availability | Description | Example |
-|-------|------|--------------|-------------|---------|
-| `_id` | ObjectId | 100%         | Unique MongoDB identifier | `ObjectId("686ed9e9c42e8cab8e1e8d3a")` |
-| `location` | GeoJSON Point | ~95%         | Property coordinates (WGS84) | `{"type": "Point", "coordinates": [-0.0294264, 51.5153806]}` |
-| `expiry_date` | Date | ~85%         | Lease expiration date (MongoDB Date) | `{"$date": {"$numberLong": "-268963200000"}}` |
-| `start_date` | Date | ~85%         | Lease start date (MongoDB Date) | `{"$date": {"$numberLong": "-3393100800000"}}` |
-| `tenure_years` | Integer | ~85%         | Original lease term in years | `99` |
+|-------|------|------------|-------------|---------|
+| `_id` | ObjectId | 100%       | Unique MongoDB identifier | `ObjectId("686ed9e9c42e8cab8e1e8d3a")` |
+| `location` | GeoJSON Point | ~95%       | Property coordinates (WGS84) | `{"type": "Point", "coordinates": [-0.0294264, 51.5153806]}` |
+| `expiry_date` | Date | ~99.75%       | Lease expiration date (MongoDB Date) | `{"$date": {"$numberLong": "-268963200000"}}` |
+| `start_date` | Date | ~99.75%    | Lease start date (MongoDB Date) | `{"$date": {"$numberLong": "-3393100800000"}}` |
+| `tenure_years` | Integer | ~99.75%         | Original lease term in years | `99` |
 
 #### Property Identification Fields
 
