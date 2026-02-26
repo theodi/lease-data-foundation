@@ -57,3 +57,45 @@ db["leases"].updateMany(
   },
   { upsert: false }
 )
+
+
+===== Rename field names
+
+Mongosh (Shell)
+
+db["leasesext"].aggregate([
+  {
+    $project: {
+      _id: 1,
+      uid: 1,
+      exp: "$expiry_date",
+      st: "$start_date",
+      ty: "$tenure_years",
+      apc: "$ab_postcode",
+      aup: "$ab_uprn",
+      bn: "$building_number",
+      cl: { $trim: { input: "$class" } },
+      lat: "$latitude",
+      loc: "$location",
+      lon: "$longitude",
+      pt: "$post_town",
+      tf: "$thoroughfare",
+      ud: "$udprn",
+      xc: "$x_coordinate",
+      yc: "$y_coordinate",
+      bnam: "$building_name",
+      lid: "$lease_id"
+    }
+  },
+  {
+    $merge: {
+      into: "leasesext",
+      on: "_id",
+      whenMatched: "replace",
+      whenNotMatched: "insert"
+    }
+  }
+], {
+  allowDiskUse: true,
+  maxTimeMS: 0
+})
