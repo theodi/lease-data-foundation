@@ -1,0 +1,7 @@
+cd /var/www/lease-prototype
+node check-for-updates.js
+node apply-update.js data/LEASES_COU_2025_09.csv --apply
+
+also if you wanted to check if that script will work before you run apply
+
+node apply-update.js data/LEASES_COU_2025_09.csv
