@@ -38,11 +38,11 @@ logger = logging.getLogger(__name__)
 
 # PostgreSQL configuration
 DB_CONFIG = {
-    "user": "postgres",
-    "password": os.getenv("DB_PASSWORD"),
-    "host": "localhost",
-    "port": "5432",
-    "dbname": "address_base"
+    "user": os.getenv("POSTGRES_USERNAME", "postgres"),
+    "password": os.getenv("POSTGRES_PASSWORD"),
+    "host": os.getenv("POSTGRES_HOST", "localhost"),
+    "port": os.getenv("POSTGRES_PORT", "5432"),
+    "dbname": os.getenv("POSTGRES_DB", "address_base")
 }
 
 # File paths

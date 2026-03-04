@@ -8,10 +8,11 @@ from src.addressbase.post_process_denormalizer import expand_building_number_ran
 load_dotenv()
 
 DB_CONFIG = {
-    "user": "postgres",
-    "password": os.getenv("DB_PASSWORD"),
-    "host": "localhost",
-    "port": "5432"
+    "user": os.getenv("POSTGRES_USERNAME", "postgres"),
+    "password": os.getenv("POSTGRES_PASSWORD"),
+    "host": os.getenv("POSTGRES_HOST", "localhost"),
+    "port": os.getenv("POSTGRES_PORT", "5432"),
+    "dbname": os.getenv("POSTGRES_DB", "address_base")
 }
 
 # Path to your CSV files
