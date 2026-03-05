@@ -980,7 +980,7 @@ def normalise_term_str(term_str: str) -> str:
     term_str = re.sub(r'[\s\u00A0]+', ' ', term_str.strip())
 
     # Remove problematic special characters (but keep colons for date formats like 12:7:1973)
-    term_str = term_str.replace('´', '').replace('~', '').replace('¨', '').replace(',', '')
+    term_str = term_str.replace('´', '').replace('~', '').replace('¨', '').replace(',', '').replace('?', '')
 
     # Remove "Residue of" prefix (also handles "residue of the term of")
     term_str = re.sub(r'^(?:For\s+)?(?:the\s+)?Residue\s+of\s+(?:the\s+)?(?:term\s+of\s+)?', '', term_str, flags=re.IGNORECASE)

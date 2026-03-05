@@ -25,17 +25,17 @@ python -m src.data.apply_update <csv_path> [options]
 
 #### Dry-run mode (preview changes without applying)
 ```bash
-python -m src.data.apply_update lease_data/LEASES_COU_CHANGES_2026_03.csv
+python -m src.data.apply_update lease_data/LEASES_COU_2026_03.csv
 ```
 
 #### Apply changes to database
 ```bash
-python -m src.data.apply_update lease_data/LEASES_COU_CHANGES_2026_03.csv --apply
+python -m src.data.apply_update lease_data/LEASES_COU_2026_03.csv --apply
 ```
 
 #### Use custom database and enable debug logging
 ```bash
-python -m src.data.apply_update lease_data/LEASES_COU_CHANGES_2026_03.csv \
+python -m src.data.apply_update lease_data/LEASES_COU_2026_03.csv \
   --apply \
   --database my_leases_db \
   --collection leases_collection \
@@ -44,7 +44,7 @@ python -m src.data.apply_update lease_data/LEASES_COU_CHANGES_2026_03.csv \
 
 #### Use remote MongoDB instance
 ```bash
-python -m src.data.apply_update lease_data/LEASES_COU_CHANGES_2026_03.csv \
+python -m src.data.apply_update lease_data/LEASES_COU_2026_03.csv \
   --apply \
   --connection-string "mongodb://user:pass@remote-host:27017"
 ```

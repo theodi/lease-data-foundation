@@ -21,6 +21,8 @@ from pymongo.errors import BulkWriteError
 from tqdm import tqdm
 
 from src.utils.mongo_client import MongoDBClient
+from src.main_regex_extractor import process_record as regex_process_record
+from src.main_t5_extractor import initialize_t5_extractor
 
 # Load environment variables
 load_dotenv()
@@ -30,7 +32,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler("apply_update.log"),
+        # logging.FileHandler("apply_update.log"),
         logging.StreamHandler(),
     ],
 )
@@ -142,6 +144,125 @@ def calculate_char_differences(
 def prompt_user(question: str) -> str:
     """Prompt user for input and return lowercase trimmed answer."""
     return input(question).strip().lower()
+
+
+def enrich_records(add_rows: List[Dict[str, str]]) -> list[Any] | tuple[list[dict[str, Any] | None], int]:
+    """
+    Enrich records with extracted lease term data using regex and T5.
+
+    First attempts regex extraction for all records. For records where regex fails,
+    uses T5 model for extraction. Returns enriched records in the same order as input.
+
+    Args:
+        add_rows: List of CSV row dictionaries to enrich
+
+    Returns:
+        List of enriched dictionaries (same length and order as add_rows), count of valid term_parsings
+    """
+    if not add_rows:
+        return []
+
+    total_records = len(add_rows)
+    logger.info(f"📊 Enriching {total_records} records...")
+
+    # Initialize result list with None placeholders
+    enriched_records: List[Optional[Dict[str, Any]]] = [None] * total_records
+
+    # Track records that need T5 processing
+    t5_needed_indices = []
+    t5_needed_records = []
+
+    # Step 1: Process all records with regex
+    logger.info("🔍 Processing records with regex extractor...")
+    regex_valid_count = 0
+    t5_valid_count = 0
+    empty_term_count = 0
+
+    for idx, row in enumerate(tqdm(add_rows, desc="Regex extraction", unit="rows")):
+        # Map the row first to get the format expected by process_record
+        mapped_row = map_row(row)
+
+        # Process with regex extractor
+        try:
+            result = regex_process_record(mapped_row)
+        except Exception as e:
+            # logger.warning(f"❌ Regex extractor failed for record {idx} (uid: {mapped_row.get('uid', 'N/A')}): {e}")
+            result = None
+
+        if result and result.get("regex_is_valid"):
+            # Remove the regex_is_valid key and add to enriched records
+            result_copy = result.copy()
+            result_copy.pop("regex_is_valid", None)
+
+            # Merge with mapped row data
+            enriched_record = {**mapped_row, **result_copy}
+            enriched_records[idx] = enriched_record
+            regex_valid_count += 1
+        else:
+            if mapped_row and mapped_row.get("term") and mapped_row["term"].strip():
+                # Collect for T5 processing
+                t5_needed_indices.append(idx)
+                t5_needed_records.append(mapped_row)
+            else:
+                empty_term_count += 1
+
+    regex_percentage = (regex_valid_count / total_records * 100) if total_records > 0 else 0
+    logger.info(f"✅ Regex extraction: {regex_valid_count}/{total_records} valid ({regex_percentage:.2f}%)")
+    logger.info(f"⚠️ {empty_term_count} records had empty term field and were skipped for T5 processing")
+
+    # Step 2: Process remaining records with T5
+    if t5_needed_records:
+        logger.info(f"🤖 Processing {len(t5_needed_records)} records with T5 extractor...")
+
+        try:
+            # Initialize T5 extractor
+            t5_extractor = initialize_t5_extractor()
+
+            # Process in batch
+            logger.info("🔄 Running T5 batch extraction (this step may take 10 minutes)...")
+            t5_results = t5_extractor.extract_batch(t5_needed_records)
+
+            # Process T5 results
+            t5_valid_count = 0
+            for idx_in_batch, (original_idx, mapped_row) in enumerate(zip(t5_needed_indices, t5_needed_records)):
+                if idx_in_batch < len(t5_results):
+                    result = t5_results[idx_in_batch]
+
+                    if result and result.get("t5_is_valid"):
+                        # Remove t5_is_valid key and merge with mapped row
+                        result_copy = result.copy()
+                        result_copy.pop("t5_is_valid", None)
+
+                        enriched_record = {**mapped_row, **result_copy}
+                        enriched_records[original_idx] = enriched_record
+                        t5_valid_count += 1
+                    else:
+                        # T5 failed, add minimal record with just uid
+                        enriched_records[original_idx] = {"uid": mapped_row["uid"]}
+                else:
+                    # No result for this record, add minimal record
+                    enriched_records[original_idx] = {"uid": mapped_row["uid"]}
+
+            t5_percentage = (t5_valid_count / len(t5_needed_records) * 100) if t5_needed_records else 0
+            logger.info(f"✅ T5 extraction: {t5_valid_count}/{len(t5_needed_records)} valid ({t5_percentage:.2f}%)")
+
+        except Exception as e:
+            logger.error(f"❌ T5 extraction failed: {e}")
+            logger.info("⚠️ Filling remaining records with minimal data (uid only)...")
+
+    # Fill any remaining None entries (shouldn't happen, but safety check)
+    for idx in range(total_records):
+        if enriched_records[idx] is None:
+            original_row = add_rows[idx]
+            mapped_row = map_row(original_row)
+            enriched_records[idx] = {"uid": mapped_row["uid"]}
+
+    # Calculate total enrichment statistics
+    total_valid = regex_valid_count + (t5_valid_count if t5_needed_records else 0)
+    total_percentage = (total_valid / total_records * 100) if total_records > 0 else 0
+    logger.info(f"📊 Total enrichment: {total_valid}/{total_records} valid ({total_percentage:.2f}%)")
+
+    return enriched_records, regex_valid_count + t5_valid_count
 
 
 def process_delete(
@@ -349,7 +470,7 @@ def process_changes(
             logger.info(f"To add: {len(add_rows)}")
 
             # Process deletes
-            logger.info("PROCESSING DELETE")
+            logger.info("PROCESSING DELETE" + (" (DRY-RUN)" if dry_run else ""))
             for original_row in tqdm(delete_rows, desc="Deleting", unit="rows"):
                 deletes, unknowns = process_delete(
                     original_row,
@@ -363,11 +484,16 @@ def process_changes(
                 unknown_count += unknowns
                 processed_count += 1
 
-                if processed_count % 1000 == 0:
-                    logger.info(f"📊 Processed {processed_count} delete records...")
+                # if processed_count % 1000 == 0:
+                #     logger.info(f"📊 Processed {processed_count} delete records...")
 
             logger.info("DELETE COMPLETE")
-            logger.info("BULK ADDING")
+
+            logger.info("ENRICHING DATA" + (" (DRY-RUN)" if dry_run else ""))
+            enriched_records, parsed_valid_terms_count = enrich_records(add_rows)
+            logger.info("ENRICHMENT COMPLETE")
+
+            logger.info("BULK ADDING" + (" (DRY-RUN)" if dry_run else ""))
 
             # Process adds in bulk
             if not dry_run:
@@ -418,9 +544,8 @@ def process_changes(
             else:
                 # Dry run: just count
                 add_count = len(add_rows)
-                for i, _ in enumerate(add_rows, 1):
-                    if i % 1000 == 0:
-                        logger.info(f"📊 Would process {i} add records...")
+                for _ in tqdm(add_rows, desc="Adding (dry-run)", unit="rows"):
+                    pass
 
             # Summary
             logger.info("\n🔍 Summary:")
@@ -428,6 +553,7 @@ def process_changes(
             logger.info(f" - Deletions: {delete_count}")
             logger.info(f" - Manual/Skipped: {unknown_count}")
             logger.info(f" - Skipped (bad columns): {skipped_count}")
+            logger.info(f" - Term enrichment: {parsed_valid_terms_count/len(add_rows)*100:.2f}% terms parsed successfully")
 
             # Update the database log
             if not dry_run and last_updated:
@@ -477,19 +603,19 @@ def main():
     parser.add_argument(
         "--database",
         type=str,
-        default=os.getenv("MONGODB_DATABASE"),
+        default=os.getenv("MONGO_DATABASE"),
         help=f"MongoDB database name (default from env file)",
     )
     parser.add_argument(
         "--collection",
         type=str,
-        default=os.getenv("MONGODB_COLLECTION"),
+        default=os.getenv("MONGO_COLLECTION"),
         help=f"MongoDB collection name (default from env file)",
     )
     parser.add_argument(
         "--connection-string",
         type=str,
-        default=os.getenv("MONGODB_URI"),
+        default=os.getenv("MONGO_URI"),
         help=f"MongoDB connection string (default from env file)",
     )
     parser.add_argument(

@@ -14,9 +14,9 @@ from typing import Dict, Any, Optional
 from pymongo import UpdateOne
 from tqdm import tqdm
 
-from utils.mongo_client import MongoDBClient
-from utils.regex_extractors import parse_lease_term
-from utils.lease_term_validator import is_lease_term_valid
+from src.utils.mongo_client import MongoDBClient
+from src.utils.regex_extractors import parse_lease_term
+from src.utils.lease_term_validator import is_lease_term_valid
 
 # Configuration
 CONNECTION_STRING = "mongodb://localhost:27017"

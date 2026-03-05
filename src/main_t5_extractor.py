@@ -11,6 +11,7 @@ Key optimizations:
 - Progress checkpointing: Resume from interruptions
 - GPU acceleration: Use CUDA if available
 """
+import os
 import os.path
 import time
 from datetime import datetime
@@ -23,20 +24,28 @@ from pymongo import UpdateOne
 from tqdm import tqdm
 from transformers import T5Tokenizer, T5ForConditionalGeneration
 from dateutil.relativedelta import relativedelta
+from dotenv import load_dotenv
 
-from utils.mongo_client import MongoDBClient
-from utils.lease_term_validator import is_lease_term_valid
+from src.utils.mongo_client import MongoDBClient
+from src.utils.lease_term_validator import is_lease_term_valid
+from src.utils.regex_extractors import normalise_term_str
+
+# Load environment variables
+load_dotenv()
 
 # Configuration
-CONNECTION_STRING = "mongodb://localhost:27017"
-DATABASE_NAME = "leases"
-COLLECTION_NAME = "leases"
+CONNECTION_STRING = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+DATABASE_NAME = os.getenv("MONGO_DATABASE", "leases")
+COLLECTION_NAME = os.getenv("MONGO_COLLECTION", "leases")
 TERM_FIELD = "term"
 DOL_FIELD = "dol"
 
 # T5 Model settings
 CURRENT_FOLDER = Path(__file__).parent
-MODEL_PATH = os.path.join(CURRENT_FOLDER, "../t5_model/trained_t5")
+MODEL_PATH = os.getenv(
+    "T5_MODEL_PATH",
+    os.path.join(CURRENT_FOLDER, "../t5_model/trained_t5")
+)
 
 # Batch processing settings - tuned for T5 inference
 # Larger batches = better GPU utilization, but more memory
@@ -80,8 +89,8 @@ class BatchT5Extractor:
             return []
 
         # Prepare inputs
-        input_texts = [f"parse lease: {r.get(TERM_FIELD, '')}" for r in records]
-
+        input_texts = [f"parse lease: {normalise_term_str(r.get(TERM_FIELD, ''))}" for r in records]
+        # print(f"Input texts: {input_texts[:10]}")
         # Tokenize batch
         inputs = self.tokenizer(
             input_texts,
@@ -109,9 +118,10 @@ class BatchT5Extractor:
         results = []
         for i, (record, raw_output) in enumerate(zip(records, raw_outputs)):
             dol = record.get(DOL_FIELD)
+            # print(raw_output)
             parsed = self._parse_and_validate(raw_output, dol)
-            if not parsed.get("t5_is_valid"):
-                results.append(parsed)
+            # if not parsed.get("t5_is_valid"):
+            results.append(parsed)
 
         return results
 
@@ -126,47 +136,53 @@ class BatchT5Extractor:
         Returns:
             Dictionary with extraction results and validation status
         """
-        parsed = self._parse_t5_output(raw_output)
+        try:
+            parsed = self._parse_t5_output(raw_output)
 
-        # If start_date not found and dol is provided, use it
-        if parsed['start_date'] is None and dol:
-            parsed['start_date'] = self._parse_dol_date(dol)
-            if parsed['start_date'] and parsed['tenure_years'] and not parsed['expiry_date']:
-                parsed['expiry_date'] = parsed['start_date'] + relativedelta(years=parsed['tenure_years'])
+            # If start_date not found and dol is provided, use it
+            if parsed['start_date'] is None and dol:
+                parsed['start_date'] = self._parse_dol_date(dol)
+                if parsed['start_date'] and parsed['tenure_years'] and not parsed['expiry_date']:
+                    parsed['expiry_date'] = parsed['start_date'] + relativedelta(years=parsed['tenure_years'])
 
-        # Check if we have enough data to be valid
-        has_valid_data = (
-            (parsed['start_date'] is not None and parsed['expiry_date'] is not None) or
-            (parsed['start_date'] is not None and parsed['tenure_years'] is not None) or
-            (parsed['expiry_date'] is not None and parsed['tenure_years'] is not None)
-        )
+            # Check if we have enough data to be valid
+            has_valid_data = (
+                (parsed['start_date'] is not None and parsed['expiry_date'] is not None) or
+                (parsed['start_date'] is not None and parsed['tenure_years'] is not None) or
+                (parsed['expiry_date'] is not None and parsed['tenure_years'] is not None)
+            )
 
-        if not has_valid_data:
-            return {
-                "t5_is_valid": False,
-                "t5_parse_error": "Insufficient data extracted"
+            if not has_valid_data:
+                return {
+                    "t5_is_valid": False,
+                    "t5_parse_error": "Insufficient data extracted"
+                }
+
+            # Validate the extracted data
+            lease_data = {
+                'start_date': parsed['start_date'],
+                'expiry_date': parsed['expiry_date'],
+                'tenure_years': parsed['tenure_years']
             }
 
-        # Validate the extracted data
-        lease_data = {
-            'start_date': parsed['start_date'],
-            'expiry_date': parsed['expiry_date'],
-            'tenure_years': parsed['tenure_years']
-        }
+            is_valid = is_lease_term_valid(lease_data)
 
-        is_valid = is_lease_term_valid(lease_data)
-
-        if is_valid:
-            return {
-                "t5_is_valid": True,
-                "start_date": parsed['start_date'],
-                "expiry_date": parsed['expiry_date'],
-                "tenure_years": parsed['tenure_years']
-            }
-        else:
+            if is_valid:
+                return {
+                    "t5_is_valid": True,
+                    "start_date": parsed['start_date'],
+                    "expiry_date": parsed['expiry_date'],
+                    "tenure_years": parsed['tenure_years']
+                }
+            else:
+                return {
+                    "t5_is_valid": False,
+                    "t5_parse_error": "Validation failed"
+                }
+        except Exception as e:
             return {
                 "t5_is_valid": False,
-                "t5_parse_error": "Validation failed"
+                "t5_parse_error": f"Parsing error: {str(e)}"
             }
 
     def _parse_t5_output(self, output: str) -> Dict[str, Any]:
@@ -287,14 +303,61 @@ class BatchT5Extractor:
         return None
 
 
+def initialize_t5_extractor(model_path: Optional[str] = None) -> BatchT5Extractor:
+    """
+    Initialize the BatchT5Extractor with MODEL_PATH from environment.
+
+    Args:
+        model_path: Optional override for model path. If not provided, reads from
+                   T5_MODEL_PATH environment variable or uses default path.
+
+    Returns:
+        BatchT5Extractor: Initialized extractor ready for batch processing
+
+    Raises:
+        FileNotFoundError: If model path doesn't exist
+        RuntimeError: If model loading fails
+
+    Example:
+        >>> extractor = initialize_t5_extractor()
+        >>> # Or with custom path:
+        >>> extractor = initialize_t5_extractor("/custom/path/to/model")
+    """
+    # Determine model path
+    if model_path is None:
+        model_path = os.getenv(
+            "T5_MODEL_PATH",
+            os.path.join(Path(__file__).parent, "../t5_model/trained_t5")
+        )
+
+    # Resolve to absolute path
+    model_path = os.path.abspath(model_path)
+
+    # Validate path exists
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(
+            f"T5 model path does not exist: {model_path}\n"
+            f"Please ensure T5_MODEL_PATH is set correctly in .env file or the model exists at the default location."
+        )
+
+    print(f"Initializing T5 extractor with model from: {model_path}")
+
+    try:
+        extractor = BatchT5Extractor(model_path)
+        print("T5 extractor initialized successfully!")
+        return extractor
+    except Exception as e:
+        raise RuntimeError(f"Failed to initialize T5 extractor: {e}") from e
+
+
 def process_t5_records():
     """
     Process all records where regex extraction failed using T5.
 
     Uses batch processing for efficiency with ~70,000 records.
     """
-    # Initialize T5 extractor
-    extractor = BatchT5Extractor(MODEL_PATH)
+    # Initialize T5 extractor using the initialization function
+    extractor = initialize_t5_extractor()
 
     with MongoDBClient(CONNECTION_STRING, DATABASE_NAME) as mongo:
         collection = mongo.get_collection(COLLECTION_NAME)
