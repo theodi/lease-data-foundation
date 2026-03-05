@@ -20,6 +20,7 @@ from pymongo import InsertOne, UpdateOne
 from pymongo.errors import BulkWriteError
 from tqdm import tqdm
 
+from src.addressbase.match_addresses import process_batch
 from src.utils.mongo_client import MongoDBClient
 from src.main_regex_extractor import process_record as regex_process_record
 from src.main_t5_extractor import initialize_t5_extractor
@@ -146,7 +147,7 @@ def prompt_user(question: str) -> str:
     return input(question).strip().lower()
 
 
-def enrich_records(add_rows: List[Dict[str, str]]) -> list[Any] | tuple[list[dict[str, Any] | None], int]:
+def process_enrichment(add_rows: List[Dict[str, str]]) -> list[Any] | tuple[list[dict[str, Any] | None], int]:
     """
     Enrich records with extracted lease term data using regex and T5.
 
@@ -208,7 +209,7 @@ def enrich_records(add_rows: List[Dict[str, str]]) -> list[Any] | tuple[list[dic
 
     regex_percentage = (regex_valid_count / total_records * 100) if total_records > 0 else 0
     logger.info(f"✅ Regex extraction: {regex_valid_count}/{total_records} valid ({regex_percentage:.2f}%)")
-    logger.info(f"⚠️ {empty_term_count} records had empty term field and were skipped for T5 processing")
+    # logger.info(f"⚠️ {empty_term_count} records had empty term field and were skipped for T5 processing")
 
     # Step 2: Process remaining records with T5
     if t5_needed_records:
@@ -402,6 +403,234 @@ def process_delete(
         return 0, 1
 
 
+def extract_version_from_filename(csv_filename: str) -> Optional[str]:
+    """
+    Extract version string from CSV filename.
+
+    Args:
+        csv_filename: Name of the CSV file
+
+    Returns:
+        Version string in format "YYYY-MM" or None
+    """
+    last_updated_match = re.search(r"(\d{4})_(\d{2})", csv_filename)
+    return f"{last_updated_match.group(1)}-{last_updated_match.group(2)}" if last_updated_match else None
+
+
+def read_csv_changes(csv_path: Path) -> tuple[List[Dict[str, str]], List[Dict[str, str]]]:
+    """
+    Read CSV file and separate delete and add rows.
+
+    Args:
+        csv_path: Path to the CSV file
+
+    Returns:
+        Tuple of (delete_rows, add_rows)
+    """
+    logger.info("📖 Reading CSV file...")
+    delete_rows = []
+    add_rows = []
+
+    with open(csv_path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            indicator = row.get("Change Indicator", "").strip().upper()
+            if indicator == "D":
+                delete_rows.append(row)
+            elif indicator == "A":
+                add_rows.append(row)
+
+    logger.info(f"To delete: {len(delete_rows)}")
+    logger.info(f"To add: {len(add_rows)}")
+
+    return delete_rows, add_rows
+
+
+def process_deletions(
+    delete_rows: List[Dict[str, str]],
+    collection,
+    lease_tracker_collection,
+    dry_run: bool,
+    last_updated: Optional[str],
+    updated_uids: Set[str],
+) -> tuple[int, int]:
+    """
+    Process all deletion operations.
+
+    Args:
+        delete_rows: List of rows to delete
+        collection: MongoDB collection
+        lease_tracker_collection: LeaseTracker collection
+        dry_run: Whether to run in dry-run mode
+        last_updated: Version string for tracking
+        updated_uids: Set of UIDs already updated
+
+    Returns:
+        Tuple of (delete_count, unknown_count)
+    """
+    logger.info("PROCESSING DELETE" + (" (DRY-RUN)" if dry_run else ""))
+    delete_count = 0
+    unknown_count = 0
+
+    for original_row in tqdm(delete_rows, desc="Deleting", unit="rows"):
+        deletes, unknowns = process_delete(
+            original_row,
+            collection,
+            dry_run,
+            last_updated,
+            updated_uids,
+            lease_tracker_collection,
+        )
+        delete_count += deletes
+        unknown_count += unknowns
+
+    logger.info("DELETE COMPLETE")
+    return delete_count, unknown_count
+
+
+def process_bulk_additions(
+    add_rows: List[Dict[str, str]],
+    collection,
+    lease_tracker_collection,
+    dry_run: bool,
+    last_updated: Optional[str],
+    updated_uids: Set[str],
+) -> int:
+    """
+    Process all addition operations in bulk.
+
+    Args:
+        add_rows: List of rows to add
+        collection: MongoDB collection
+        lease_tracker_collection: LeaseTracker collection
+        dry_run: Whether to run in dry-run mode
+        last_updated: Version string for tracking
+        updated_uids: Set of UIDs already updated
+
+    Returns:
+        Number of records added
+    """
+    logger.info("BULK ADDING" + (" (DRY-RUN)" if dry_run else ""))
+
+    if dry_run:
+        # Dry run: just count
+        for _ in tqdm(add_rows, desc="Adding (dry-run)", unit="rows"):
+            pass
+        return len(add_rows)
+
+    # Actual bulk add
+    BATCH_SIZE = 1000
+    batch = []
+    lease_tracker_ops = []
+    batch_count = 0
+
+    for original_row in tqdm(add_rows, desc="Adding", unit="rows"):
+        mapped_row = map_row(original_row)
+        batch.append(InsertOne(mapped_row))
+
+        # Prepare LeaseTracker upserts for unique UIDs
+        uid = mapped_row["uid"]
+        if last_updated and uid not in updated_uids:
+            lease_tracker_ops.append(UpdateOne(
+                {"uid": uid},
+                {"$set": {"lastUpdated": last_updated}},
+                upsert=True,
+            ))
+            updated_uids.add(uid)
+
+        if len(batch) >= BATCH_SIZE:
+            try:
+                collection.bulk_write(batch, ordered=False)
+                batch_count += len(batch)
+                logger.info(f"📊 Bulk added {batch_count} records so far...")
+            except BulkWriteError as e:
+                logger.warning(f"Bulk write error: {e.details}")
+                batch_count += len(batch) - len(e.details.get("writeErrors", []))
+            batch = []
+
+    # Process remaining batch
+    if batch:
+        try:
+            collection.bulk_write(batch, ordered=False)
+            batch_count += len(batch)
+            logger.info(f"📊 Bulk added {batch_count} records in total.")
+        except BulkWriteError as e:
+            logger.warning(f"Bulk write error: {e.details}")
+            batch_count += len(batch) - len(e.details.get("writeErrors", []))
+
+    # Update LeaseTracker
+    if lease_tracker_ops:
+        lease_tracker_collection.bulk_write(lease_tracker_ops)
+
+    return batch_count
+
+
+def update_database_log(
+    lease_update_log_collection,
+    last_updated: str,
+    csv_filename: str,
+    add_count: int,
+    delete_count: int,
+    skipped_count: int,
+    unknown_count: int,
+) -> None:
+    """
+    Update the database log with operation results.
+
+    Args:
+        lease_update_log_collection: LeaseUpdateLog collection
+        last_updated: Version string
+        csv_filename: Name of the CSV file
+        add_count: Number of additions
+        delete_count: Number of deletions
+        skipped_count: Number of skipped records
+        unknown_count: Number of manual/skipped records
+    """
+    lease_update_log_collection.update_one(
+        {"version": last_updated},
+        {
+            "$set": {
+                "added": add_count,
+                "deleted": delete_count,
+                "skipped": skipped_count,
+                "manualReview": unknown_count,
+                "notes": f"Change file: {csv_filename}",
+                "updatedAt": datetime.now(timezone.utc),
+            }
+        },
+        upsert=True,
+    )
+    logger.info(f"✅ Updated LeaseUpdateLog for version {last_updated}")
+
+
+def print_summary(
+    add_count: int,
+    delete_count: int,
+    unknown_count: int,
+    skipped_count: int,
+    parsed_valid_terms_count: int,
+    total_add_rows: int,
+) -> None:
+    """
+    Print summary of operations.
+
+    Args:
+        add_count: Number of additions
+        delete_count: Number of deletions
+        unknown_count: Number of manual/skipped records
+        skipped_count: Number of skipped records
+        parsed_valid_terms_count: Number of successfully parsed terms
+        total_add_rows: Total number of add rows
+    """
+    logger.info("\n🔍 Summary:")
+    logger.info(f" - Additions: {add_count}")
+    logger.info(f" - Deletions: {delete_count}")
+    logger.info(f" - Manual/Skipped: {unknown_count}")
+    logger.info(f" - Skipped (bad columns): {skipped_count}")
+    if total_add_rows > 0:
+        logger.info(f" - Term enrichment: {parsed_valid_terms_count/total_add_rows*100:.2f}% terms parsed successfully")
+
+
 def process_changes(
     csv_path: str,
     database_name: str,
@@ -426,10 +655,9 @@ def process_changes(
     if not csv_path.exists():
         raise FileNotFoundError(f"CSV file not found: {csv_path}")
 
-    # Extract lastUpdated from CSV filename
+    # Extract version from filename
     csv_filename = csv_path.name
-    last_updated_match = re.search(r"(\d{4})_(\d{2})", csv_filename)
-    last_updated = f"{last_updated_match.group(1)}-{last_updated_match.group(2)}" if last_updated_match else None
+    last_updated = extract_version_from_filename(csv_filename)
 
     # Initialize MongoDB connection
     client = MongoDBClient(
@@ -437,10 +665,6 @@ def process_changes(
         database_name=database_name,
     )
 
-    delete_count = 0
-    add_count = 0
-    unknown_count = 0
-    processed_count = 0
     skipped_count = 0
     updated_uids: Set[str] = set()
 
@@ -452,126 +676,55 @@ def process_changes(
 
             logger.info(f"📦 Connected to database: {database_name}.{collection_name}")
 
-            # First pass: separate delete and add rows
-            logger.info("📖 Reading CSV file...")
-            delete_rows = []
-            add_rows = []
+            # Read CSV and separate changes
+            delete_rows, add_rows = read_csv_changes(csv_path)
 
-            with open(csv_path, "r", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    indicator = row.get("Change Indicator", "").strip().upper()
-                    if indicator == "D":
-                        delete_rows.append(row)
-                    elif indicator == "A":
-                        add_rows.append(row)
+            # Process deletions
+            delete_count, unknown_count = process_deletions(
+                delete_rows,
+                collection,
+                lease_tracker_collection,
+                dry_run,
+                last_updated,
+                updated_uids,
+            )
 
-            logger.info(f"To delete: {len(delete_rows)}")
-            logger.info(f"To add: {len(add_rows)}")
-
-            # Process deletes
-            logger.info("PROCESSING DELETE" + (" (DRY-RUN)" if dry_run else ""))
-            for original_row in tqdm(delete_rows, desc="Deleting", unit="rows"):
-                deletes, unknowns = process_delete(
-                    original_row,
-                    collection,
-                    dry_run,
-                    last_updated,
-                    updated_uids,
-                    lease_tracker_collection,
-                )
-                delete_count += deletes
-                unknown_count += unknowns
-                processed_count += 1
-
-                # if processed_count % 1000 == 0:
-                #     logger.info(f"📊 Processed {processed_count} delete records...")
-
-            logger.info("DELETE COMPLETE")
-
+            # Enrich data
             logger.info("ENRICHING DATA" + (" (DRY-RUN)" if dry_run else ""))
-            enriched_records, parsed_valid_terms_count = enrich_records(add_rows)
+            enriched_records, parsed_valid_terms_count = process_enrichment(add_rows)
             logger.info("ENRICHMENT COMPLETE")
 
-            logger.info("BULK ADDING" + (" (DRY-RUN)" if dry_run else ""))
+            # Process bulk additions
+            add_count = process_bulk_additions(
+                add_rows,
+                collection,
+                lease_tracker_collection,
+                dry_run,
+                last_updated,
+                updated_uids,
+            )
 
-            # Process adds in bulk
-            if not dry_run:
-                BATCH_SIZE = 1000
-                batch = []
-                lease_tracker_ops = []
-                batch_count = 0
+            # Print summary
+            print_summary(
+                add_count,
+                delete_count,
+                unknown_count,
+                skipped_count,
+                parsed_valid_terms_count,
+                len(add_rows),
+            )
 
-                for original_row in tqdm(add_rows, desc="Adding", unit="rows"):
-                    mapped_row = map_row(original_row)
-                    batch.append(InsertOne(mapped_row))
-
-                    # Prepare LeaseTracker upserts for unique UIDs
-                    uid = mapped_row["uid"]
-                    if last_updated and uid not in updated_uids:
-                        lease_tracker_ops.append(UpdateOne(
-                            {"uid": uid},
-                            {"$set": {"lastUpdated": last_updated}},
-                            upsert=True,
-                        ))
-                        updated_uids.add(uid)
-
-                    if len(batch) >= BATCH_SIZE:
-                        try:
-                            collection.bulk_write(batch, ordered=False)
-                            batch_count += len(batch)
-                            logger.info(f"📊 Bulk added {batch_count} records so far...")
-                        except BulkWriteError as e:
-                            logger.warning(f"Bulk write error: {e.details}")
-                            batch_count += len(batch) - len(e.details.get("writeErrors", []))
-                        batch = []
-
-                # Process remaining batch
-                if batch:
-                    try:
-                        collection.bulk_write(batch, ordered=False)
-                        batch_count += len(batch)
-                        logger.info(f"📊 Bulk added {batch_count} records in total.")
-                    except BulkWriteError as e:
-                        logger.warning(f"Bulk write error: {e.details}")
-                        batch_count += len(batch) - len(e.details.get("writeErrors", []))
-
-                # Update LeaseTracker
-                if lease_tracker_ops:
-                    lease_tracker_collection.bulk_write(lease_tracker_ops)
-
-                add_count = batch_count
-            else:
-                # Dry run: just count
-                add_count = len(add_rows)
-                for _ in tqdm(add_rows, desc="Adding (dry-run)", unit="rows"):
-                    pass
-
-            # Summary
-            logger.info("\n🔍 Summary:")
-            logger.info(f" - Additions: {add_count}")
-            logger.info(f" - Deletions: {delete_count}")
-            logger.info(f" - Manual/Skipped: {unknown_count}")
-            logger.info(f" - Skipped (bad columns): {skipped_count}")
-            logger.info(f" - Term enrichment: {parsed_valid_terms_count/len(add_rows)*100:.2f}% terms parsed successfully")
-
-            # Update the database log
+            # Update database log
             if not dry_run and last_updated:
-                lease_update_log_collection.update_one(
-                    {"version": last_updated},
-                    {
-                        "$set": {
-                            "added": add_count,
-                            "deleted": delete_count,
-                            "skipped": skipped_count,
-                            "manualReview": unknown_count,
-                            "notes": f"Change file: {csv_filename}",
-                            "updatedAt": datetime.now(timezone.utc),
-                        }
-                    },
-                    upsert=True,
+                update_database_log(
+                    lease_update_log_collection,
+                    last_updated,
+                    csv_filename,
+                    add_count,
+                    delete_count,
+                    skipped_count,
+                    unknown_count,
                 )
-                logger.info(f"✅ Updated LeaseUpdateLog for version {last_updated}")
 
     except Exception as e:
         logger.error(f"❌ Error processing changes: {e}")
