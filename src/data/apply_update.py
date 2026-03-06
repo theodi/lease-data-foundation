@@ -19,8 +19,13 @@ from dotenv import load_dotenv
 from pymongo import InsertOne, UpdateOne
 from pymongo.errors import BulkWriteError
 from tqdm import tqdm
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
-from src.addressbase.match_addresses import process_batch
+from src.addressbase.match_addresses import (
+    parse_and_prepare_records,
+    batch_lookup_addresses,
+)
 from src.utils.mongo_client import MongoDBClient
 from src.main_regex_extractor import process_record as regex_process_record
 from src.main_t5_extractor import initialize_t5_extractor
@@ -38,6 +43,15 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger(__name__)
+
+# PostgreSQL configuration
+PG_CONFIG = {
+    "user": os.getenv("POSTGRES_USERNAME", "postgres"),
+    "password": os.getenv("POSTGRES_PASSWORD"),
+    "host": os.getenv("POSTGRES_HOST", "localhost"),
+    "port": os.getenv("POSTGRES_PORT", "5432"),
+    "dbname": os.getenv("POSTGRES_DB", "address_base")
+}
 
 # Field mapping from CSV to MongoDB short keys
 FIELD_MAP = {
@@ -147,7 +161,7 @@ def prompt_user(question: str) -> str:
     return input(question).strip().lower()
 
 
-def process_enrichment(add_rows: List[Dict[str, str]]) -> list[Any] | tuple[list[dict[str, Any] | None], int]:
+def process_enrichment(add_rows: List[Dict[str, str]]) -> tuple[list[dict[str, Any] | None], int, int]:
     """
     Enrich records with extracted lease term data using regex and T5.
 
@@ -158,10 +172,10 @@ def process_enrichment(add_rows: List[Dict[str, str]]) -> list[Any] | tuple[list
         add_rows: List of CSV row dictionaries to enrich
 
     Returns:
-        List of enriched dictionaries (same length and order as add_rows), count of valid term_parsings
+        List of enriched dictionaries (same length and order as add_rows), count of valid term_parsings, count of successful AddressBase mappings
     """
     if not add_rows:
-        return []
+        return [], 0, 0
 
     total_records = len(add_rows)
     logger.info(f"📊 Enriching {total_records} records...")
@@ -169,6 +183,22 @@ def process_enrichment(add_rows: List[Dict[str, str]]) -> list[Any] | tuple[list
     # Initialize result list with None placeholders
     enriched_records: List[Optional[Dict[str, Any]]] = [None] * total_records
 
+    # Term string processing with regex and T5
+    terms_processed_count = process_term_string(add_rows, enriched_records, total_records)
+    mapped_records_count = map_to_addressbase(add_rows, enriched_records, total_records)
+
+    # Fill any remaining None entries (shouldn't happen, but safety check)
+    for idx in range(total_records):
+        if enriched_records[idx] is None:
+            original_row = add_rows[idx]
+            mapped_row = map_row(original_row)
+            enriched_records[idx] = {"uid": mapped_row["uid"]}
+
+    return enriched_records, terms_processed_count, mapped_records_count
+
+
+def process_term_string(add_rows: list[dict[str, str]], enriched_records: list[dict[str, Any] | None],
+                        total_records: int) -> int:
     # Track records that need T5 processing
     t5_needed_indices = []
     t5_needed_records = []
@@ -220,7 +250,7 @@ def process_enrichment(add_rows: List[Dict[str, str]]) -> list[Any] | tuple[list
             t5_extractor = initialize_t5_extractor()
 
             # Process in batch
-            logger.info("🔄 Running T5 batch extraction (this step may take 10 minutes)...")
+            logger.info("🔄 Running T5 batch extraction (this step may take up to 10 minutes)...")
             t5_results = t5_extractor.extract_batch(t5_needed_records)
 
             # Process T5 results
@@ -251,19 +281,134 @@ def process_enrichment(add_rows: List[Dict[str, str]]) -> list[Any] | tuple[list
             logger.error(f"❌ T5 extraction failed: {e}")
             logger.info("⚠️ Filling remaining records with minimal data (uid only)...")
 
-    # Fill any remaining None entries (shouldn't happen, but safety check)
-    for idx in range(total_records):
-        if enriched_records[idx] is None:
-            original_row = add_rows[idx]
-            mapped_row = map_row(original_row)
-            enriched_records[idx] = {"uid": mapped_row["uid"]}
-
-    # Calculate total enrichment statistics
+    # Calculate total term processing statistics
     total_valid = regex_valid_count + (t5_valid_count if t5_needed_records else 0)
     total_percentage = (total_valid / total_records * 100) if total_records > 0 else 0
-    logger.info(f"📊 Total enrichment: {total_valid}/{total_records} valid ({total_percentage:.2f}%)")
+    logger.info(f"📊 Total lease term extraction: {total_valid}/{total_records} valid ({total_percentage:.2f}%)")
 
-    return enriched_records, regex_valid_count + t5_valid_count
+    return regex_valid_count + t5_valid_count
+
+
+def map_to_addressbase(
+    add_rows: List[Dict[str, str]],
+    enriched_records: List[Optional[Dict[str, Any]]],
+    total_records: int
+) -> int:
+    """
+    Map records to AddressBase database and enrich with geographical data.
+
+    Args:
+        add_rows: Original CSV rows
+        enriched_records: List of enriched records (modified in place)
+        total_records: Total number of records
+
+    Returns:
+        Number of successfully mapped records
+    """
+    if not add_rows:
+        return 0
+
+    logger.info("🗺️ Mapping records to AddressBase...")
+
+    # Connect to PostgreSQL
+    try:
+        pg_conn = psycopg2.connect(**PG_CONFIG)
+        pg_cursor = pg_conn.cursor(cursor_factory=RealDictCursor)
+        logger.info("✅ Connected to PostgreSQL AddressBase")
+    except Exception as e:
+        logger.error(f"❌ Failed to connect to PostgreSQL: {e}")
+        logger.warning("⚠️ Skipping AddressBase mapping")
+        return 0
+
+    mapped_count = 0
+
+    try:
+        # Prepare batch for lookup - convert to format expected by parse_and_prepare_records
+        batch = []
+        for idx, row in enumerate(add_rows):
+            # Get the mapped row data
+            mapped_row = map_row(row)
+
+            # Create document in the format expected by parse_and_prepare_records
+            doc = {
+                "uid": mapped_row["uid"],
+                "apd": mapped_row["apd"],
+                "pc": mapped_row["pc"],
+                "uprn": mapped_row["uprn"]
+            }
+            batch.append(doc)
+
+        # Parse addresses and prepare for lookup
+        logger.info("🔍 Parsing addresses...")
+        records_for_lookup, parse_errors = parse_and_prepare_records(batch)
+
+        # Perform batch lookup
+        logger.info(f"🔎 Looking up {len(records_for_lookup)} addresses in AddressBase...")
+        found_records, not_found_records = batch_lookup_addresses(pg_cursor, records_for_lookup)
+
+        logger.info(f"✅ AddressBase lookup: {len(found_records)} found, {len(not_found_records)} not found")
+
+        # Create a mapping from uid to AddressBase data
+        uid_to_ab_data = {}
+        for rec in found_records:
+            uid = rec.get("uid")
+            if uid:
+                # Extract relevant AddressBase fields
+                ab_data = {
+                    "aup": rec.get("uprn"),
+                    "bn": rec.get("building_number"),
+                    "bnam": rec.get("building_name"),
+                    "tf": rec.get("thoroughfare"),
+                    "pt": rec.get("post_town"),
+                    "apc": rec.get("postcode"),
+                    "lat": rec.get("latitude"),
+                    "lon": rec.get("longitude"),
+                    "cl": rec.get("class"),
+                    "ud": rec.get("udprn"),
+                    "xc": rec.get("x_coordinate"),
+                    "yc": rec.get("y_coordinate"),
+                }
+                if rec.get("latitude") and rec.get("longitude"):
+                    # GeoJSON Point format: [longitude, latitude]
+                    ab_data["location"] = {
+                        "type": "Point",
+                        "coordinates": [float(rec.get("longitude")), float(rec.get("latitude"))]
+                    }
+                # Remove None values to keep documents clean
+                ab_data = {k: v for k, v in ab_data.items() if v is not None}
+                uid_to_ab_data[uid] = ab_data
+
+        # Merge AddressBase data into enriched_records
+        for idx in range(total_records):
+            if enriched_records[idx] is not None:
+                uid = enriched_records[idx].get("uid")
+                if uid in uid_to_ab_data:
+                    # Merge AddressBase data into the existing enriched record
+                    enriched_records[idx].update(uid_to_ab_data[uid])
+                    mapped_count += 1
+            else:
+                # If record doesn't exist yet, create it with just the uid and AB data
+                original_row = add_rows[idx]
+                mapped_row = map_row(original_row)
+                uid = mapped_row["uid"]
+
+                if uid in uid_to_ab_data:
+                    enriched_records[idx] = {**mapped_row, **uid_to_ab_data[uid]}
+                    mapped_count += 1
+                else:
+                    enriched_records[idx] = mapped_row
+
+        mapped_percentage = (mapped_count / total_records * 100) if total_records > 0 else 0
+        logger.info(f"📊 AddressBase mapping: {mapped_count}/{total_records} records enriched ({mapped_percentage:.2f}%)")
+
+    except Exception as e:
+        logger.error(f"❌ Error during AddressBase mapping: {e}")
+        logger.warning("⚠️ Continuing without AddressBase enrichment for remaining records")
+    finally:
+        pg_cursor.close()
+        pg_conn.close()
+
+    return mapped_count
 
 
 def process_delete(
@@ -490,6 +635,7 @@ def process_deletions(
 
 def process_bulk_additions(
     add_rows: List[Dict[str, str]],
+    enriched_records: List[Dict[str, Any]],
     collection,
     lease_tracker_collection,
     dry_run: bool,
@@ -501,6 +647,7 @@ def process_bulk_additions(
 
     Args:
         add_rows: List of rows to add
+        enriched_records: List of enriched records with parsed lease terms and AddressBase data
         collection: MongoDB collection
         lease_tracker_collection: LeaseTracker collection
         dry_run: Whether to run in dry-run mode
@@ -524,8 +671,12 @@ def process_bulk_additions(
     lease_tracker_ops = []
     batch_count = 0
 
-    for original_row in tqdm(add_rows, desc="Adding", unit="rows"):
-        mapped_row = map_row(original_row)
+    for idx, original_row in enumerate(tqdm(add_rows, desc="Adding", unit="rows")):
+        # Use enriched record if available, otherwise fall back to map_row
+        if idx < len(enriched_records) and enriched_records[idx]:
+            mapped_row = enriched_records[idx]
+        else:
+            mapped_row = map_row(original_row)
         batch.append(InsertOne(mapped_row))
 
         # Prepare LeaseTracker upserts for unique UIDs
@@ -609,6 +760,7 @@ def print_summary(
     unknown_count: int,
     skipped_count: int,
     parsed_valid_terms_count: int,
+    mapped_records_count: int,
     total_add_rows: int,
 ) -> None:
     """
@@ -620,6 +772,7 @@ def print_summary(
         unknown_count: Number of manual/skipped records
         skipped_count: Number of skipped records
         parsed_valid_terms_count: Number of successfully parsed terms
+        mapped_records_count: Number of records mapped to AddressBase
         total_add_rows: Total number of add rows
     """
     logger.info("\n🔍 Summary:")
@@ -629,6 +782,7 @@ def print_summary(
     logger.info(f" - Skipped (bad columns): {skipped_count}")
     if total_add_rows > 0:
         logger.info(f" - Term enrichment: {parsed_valid_terms_count/total_add_rows*100:.2f}% terms parsed successfully")
+        logger.info(f" - AddressBase mapping: {mapped_records_count/total_add_rows*100:.2f}% records mapped successfully")
 
 
 def process_changes(
@@ -691,12 +845,13 @@ def process_changes(
 
             # Enrich data
             logger.info("ENRICHING DATA" + (" (DRY-RUN)" if dry_run else ""))
-            enriched_records, parsed_valid_terms_count = process_enrichment(add_rows)
+            enriched_records, parsed_valid_terms_count, mapped_records_count = process_enrichment(add_rows)
             logger.info("ENRICHMENT COMPLETE")
 
             # Process bulk additions
             add_count = process_bulk_additions(
                 add_rows,
+                enriched_records,
                 collection,
                 lease_tracker_collection,
                 dry_run,
@@ -711,6 +866,7 @@ def process_changes(
                 unknown_count,
                 skipped_count,
                 parsed_valid_terms_count,
+                mapped_records_count,
                 len(add_rows),
             )
 

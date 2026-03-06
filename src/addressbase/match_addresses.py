@@ -538,33 +538,21 @@ def _batch_lookup_by_city(
     return found_records, not_found_records
 
 
-def process_batch(
-    batch: list[dict],
-    pg_cursor,
-    found_writer,
-    not_found_writer,
-    found_header_written: bool
-) -> tuple[int, int, bool]:
+def parse_and_prepare_records(batch: list[dict]) -> tuple[list[dict], list[dict]]:
     """
-    Process a batch of MongoDB documents.
+    Parse addresses from batch and prepare records for lookup.
 
     Args:
-        batch: List of MongoDB documents
-        pg_cursor: PostgreSQL cursor
-        found_writer: CSV writer for found addresses
-        not_found_writer: CSV writer for not found addresses
-        found_header_written: Whether the found CSV header has been written
+        batch: List of MongoDB documents with uid, apd, pc, uprn fields
 
     Returns:
-        Tuple of (found_count, not_found_count, found_header_written)
+        Tuple of (records_for_lookup, parse_errors)
     """
-    # Parse addresses and prepare records
     records = []
     parse_errors = []
 
     for doc in batch:
         uid = str(doc.get("uid", "")).strip()
-        # apd_original = str(doc.get("rpd", "")).strip()
         apd_original = str(doc.get("apd", "")).strip()
         apd = normalise_address(apd_original)
         pc = str(doc.get("pc", "")).strip()
@@ -580,10 +568,10 @@ def process_batch(
             house = parsed.get("house", "").strip()
             if not house_number:
                 if house != "" and pc != "":
-                    # Fallback to "house" label if "house_number" is not found (some addresses might be parsed differently)
+                    # Fallback to "house" label if "house_number" is not found
                     house_number = house
                 else:
-                    # parsing might have failed to extract house number, try parsing the original unnormalised address as a last resort
+                    # Try parsing the original unnormalised address as a last resort
                     parsed = parse_address_string(apd_original)
                     house_number = parsed.get("house_number", parsed.get("house", "")).strip()
 
@@ -614,6 +602,32 @@ def process_batch(
         except Exception as e:
             logger.warning(f"Failed to parse address '{apd}': {e}")
             parse_errors.append({"uid": uid, "apd_original": apd_original, "apd": apd, "pc": pc, "uprn": uprn})
+
+    return records, parse_errors
+
+
+def process_batch(
+    batch: list[dict],
+    pg_cursor,
+    found_writer,
+    not_found_writer,
+    found_header_written: bool
+) -> tuple[int, int, bool]:
+    """
+    Process a batch of MongoDB documents.
+
+    Args:
+        batch: List of MongoDB documents
+        pg_cursor: PostgreSQL cursor
+        found_writer: CSV writer for found addresses
+        not_found_writer: CSV writer for not found addresses
+        found_header_written: Whether the found CSV header has been written
+
+    Returns:
+        Tuple of (found_count, not_found_count, found_header_written)
+    """
+    # Parse addresses and prepare records
+    records, parse_errors = parse_and_prepare_records(batch)
 
     # Batch lookup in PostgreSQL
     found_records, not_found_records = batch_lookup_addresses(pg_cursor, records)

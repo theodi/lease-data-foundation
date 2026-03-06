@@ -114,3 +114,7 @@ Most recent update to the record.
 ## Load AddressBase into PostgreSQL
 
 run: src/addressbase/load_data.py
+
+A post process can be used to update the data after loading. This denormalizes the data to increase the data matching. It adds new records for building number ranges (such as 2-6, adds 5 new records for 2,3,4,5,6) and also creates additional records for THOROUGHFARE containing "ST." with the dot removed (e.g., "ST. JAMES'S PARADE" -> adds new record with "ST JAMES'S PARADE").
+
+Post processing: src/addressbase/post_process_denormalizer.py
