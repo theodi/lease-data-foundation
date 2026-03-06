@@ -172,7 +172,7 @@ def process_enrichment(add_rows: List[Dict[str, str]]) -> tuple[list[dict[str, A
         add_rows: List of CSV row dictionaries to enrich
 
     Returns:
-        List of enriched dictionaries (same length and order as add_rows), count of valid term_parsings, count of successful AddressBase mappings
+        List of enriched dictionaries (same length and order as add_rows), percentage of valid term_parsings, percentage of successful AddressBase mappings
     """
     if not add_rows:
         return [], 0, 0
@@ -184,8 +184,8 @@ def process_enrichment(add_rows: List[Dict[str, str]]) -> tuple[list[dict[str, A
     enriched_records: List[Optional[Dict[str, Any]]] = [None] * total_records
 
     # Term string processing with regex and T5
-    terms_processed_count = process_term_string(add_rows, enriched_records, total_records)
-    mapped_records_count = map_to_addressbase(add_rows, enriched_records, total_records)
+    terms_processed_percentage = process_term_string(add_rows, enriched_records, total_records)
+    mapped_records_percentage = map_to_addressbase(add_rows, enriched_records, total_records)
 
     # Fill any remaining None entries (shouldn't happen, but safety check)
     for idx in range(total_records):
@@ -194,7 +194,7 @@ def process_enrichment(add_rows: List[Dict[str, str]]) -> tuple[list[dict[str, A
             mapped_row = map_row(original_row)
             enriched_records[idx] = {"uid": mapped_row["uid"]}
 
-    return enriched_records, terms_processed_count, mapped_records_count
+    return enriched_records, terms_processed_percentage, mapped_records_percentage
 
 
 def process_term_string(add_rows: list[dict[str, str]], enriched_records: list[dict[str, Any] | None],
@@ -286,7 +286,7 @@ def process_term_string(add_rows: list[dict[str, str]], enriched_records: list[d
     total_percentage = (total_valid / total_records * 100) if total_records > 0 else 0
     logger.info(f"📊 Total lease term extraction: {total_valid}/{total_records} valid ({total_percentage:.2f}%)")
 
-    return regex_valid_count + t5_valid_count
+    return total_percentage
 
 
 def map_to_addressbase(
@@ -303,7 +303,7 @@ def map_to_addressbase(
         total_records: Total number of records
 
     Returns:
-        Number of successfully mapped records
+        Percentage of successfully mapped records
     """
     if not add_rows:
         return 0
@@ -321,6 +321,7 @@ def map_to_addressbase(
         return 0
 
     mapped_count = 0
+    mapped_percentage = 0
 
     try:
         # Prepare batch for lookup - convert to format expected by parse_and_prepare_records
@@ -408,7 +409,7 @@ def map_to_addressbase(
         pg_cursor.close()
         pg_conn.close()
 
-    return mapped_count
+    return mapped_percentage
 
 
 def process_delete(
@@ -418,20 +419,22 @@ def process_delete(
     last_updated: Optional[str],
     updated_uids: Set[str],
     lease_tracker_collection,
-) -> tuple[int, int]:
+    leasesext_collection,
+) -> tuple[int, int, int]:
     """
-    Process a single delete operation.
+    Process a single delete operation with cascade delete support.
 
     Args:
         original_row: CSV row to delete
-        collection: MongoDB collection
+        collection: MongoDB collection (leases)
         dry_run: Whether to run in dry-run mode
         last_updated: Version string for tracking
         updated_uids: Set of UIDs already updated
         lease_tracker_collection: LeaseTracker collection
+        leasesext_collection: Optional leasesext collection for cascade delete
 
     Returns:
-        Tuple of (delete_count, unknown_count)
+        Tuple of (delete_count, leasessext_del_count, unknown_count)
     """
     mapped_row = map_row(original_row)
     uid = mapped_row["uid"]
@@ -451,14 +454,15 @@ def process_delete(
     if not candidate_matches:
         if DEBUG:
             logger.info(f"❌ Delete UID {uid} — no matches for RO {ro} and APID {apid}")
-        return 0, 1
+        return 0, 0, 1
 
     # If exactly one candidate, delete it directly
     if len(candidate_matches) == 1:
         if DEBUG:
             logger.info(f"🗑️ Deleting single candidate match for UID {uid}")
+        lease_id = candidate_matches[0]["_id"]
         if not dry_run:
-            collection.delete_one({"_id": candidate_matches[0]["_id"]})
+            collection.delete_one({"_id": lease_id})
             if last_updated and uid not in updated_uids:
                 lease_tracker_collection.update_one(
                     {"uid": uid},
@@ -466,7 +470,11 @@ def process_delete(
                     upsert=True,
                 )
                 updated_uids.add(uid)
-        return 1, 0
+
+        # Cascade delete from leasesext
+        leasesext_del_count = cascade_delete_leasesext([lease_id], leasesext_collection, dry_run)
+
+        return 1, leasesext_del_count, 0
 
     # Check for exact matches across all fields
     exact_matches = []
@@ -481,8 +489,8 @@ def process_delete(
     if exact_matches:
         if DEBUG:
             logger.info(f"🗑️ Would delete {len(exact_matches)} record(s) for UID {uid}")
+        ids = [doc["_id"] for doc in exact_matches]
         if not dry_run:
-            ids = [doc["_id"] for doc in exact_matches]
             collection.delete_many({"_id": {"$in": ids}})
             if last_updated and uid not in updated_uids:
                 lease_tracker_collection.update_one(
@@ -491,7 +499,11 @@ def process_delete(
                     upsert=True,
                 )
                 updated_uids.add(uid)
-        return len(exact_matches), 0
+
+        # Cascade delete from leasesext
+        leasesext_del_count = cascade_delete_leasesext(ids, leasesext_collection, dry_run)
+
+        return len(exact_matches), leasesext_del_count, 0
 
     # Calculate character differences for ambiguous deletion
     char_diff_details = []
@@ -507,8 +519,8 @@ def process_delete(
     # If only 1 character difference total, treat as exact match
     total_char_diffs = sum(detail["total_diffs"] for detail in char_diff_details)
     if total_char_diffs == 1:
+        ids = [doc["_id"] for doc in candidate_matches]
         if not dry_run:
-            ids = [doc["_id"] for doc in candidate_matches]
             collection.delete_many({"_id": {"$in": ids}})
             if last_updated and uid not in updated_uids:
                 lease_tracker_collection.update_one(
@@ -517,7 +529,11 @@ def process_delete(
                     upsert=True,
                 )
                 updated_uids.add(uid)
-        return len(candidate_matches), 0
+
+        # Cascade delete from leasesext
+        leasesext_del_count = cascade_delete_leasesext(ids, leasesext_collection, dry_run)
+
+        return len(candidate_matches), leasesext_del_count, 0
 
     # Ambiguous deletion - prompt user
     logger.warning(f"⚠️ Ambiguous deletion for UID {uid} — no exact match:")
@@ -533,8 +549,8 @@ def process_delete(
     choice = prompt_user("❓ [k]eep DB, [d]elete anyway, [s]kip? (k/d/s): ")
 
     if choice == "d":
+        ids = [doc["_id"] for doc in candidate_matches]
         if not dry_run:
-            ids = [doc["_id"] for doc in candidate_matches]
             collection.delete_many({"_id": {"$in": ids}})
             if last_updated and uid not in updated_uids:
                 lease_tracker_collection.update_one(
@@ -543,9 +559,49 @@ def process_delete(
                     upsert=True,
                 )
                 updated_uids.add(uid)
-        return len(candidate_matches), 0
+
+        # Cascade delete from leasesext
+        leasesext_del_count = cascade_delete_leasesext(ids, leasesext_collection, dry_run)
+
+        return len(candidate_matches), leasesext_del_count, 0
     else:
-        return 0, 1
+        return 0, 0, 1
+
+
+def cascade_delete_leasesext(
+    lease_ids: List[Any],
+    leasesext_collection,
+    dry_run: bool,
+) -> int:
+    """
+    Perform cascade delete on leasesext collection.
+
+    Deletes records from leasesext collection where 'lid' field matches
+    any of the provided lease _ids.
+
+    Args:
+        lease_ids: List of lease document _ids to cascade delete
+        leasesext_collection: MongoDB leasesext collection
+        dry_run: Whether to run in dry-run mode
+
+    Returns:
+        Number of leasesext records deleted
+    """
+    if not lease_ids or leasesext_collection is None:
+        return 0
+
+    if dry_run:
+        # In dry-run mode, just count how many would be deleted
+        count = leasesext_collection.count_documents({"lid": {"$in": lease_ids}})
+        if DEBUG and count > 0:
+            logger.info(f"🔗 Would cascade delete {count} record(s) from leasesext")
+        return count
+    else:
+        # Actually perform the cascade delete
+        result = leasesext_collection.delete_many({"lid": {"$in": lease_ids}})
+        if DEBUG and result.deleted_count > 0:
+            logger.info(f"🔗 Cascade deleted {result.deleted_count} record(s) from leasesext")
+        return result.deleted_count
 
 
 def extract_version_from_filename(csv_filename: str) -> Optional[str]:
@@ -598,7 +654,8 @@ def process_deletions(
     dry_run: bool,
     last_updated: Optional[str],
     updated_uids: Set[str],
-) -> tuple[int, int]:
+    leasesext_collection=None,
+) -> tuple[int, int, int]:
     """
     Process all deletion operations.
 
@@ -609,28 +666,32 @@ def process_deletions(
         dry_run: Whether to run in dry-run mode
         last_updated: Version string for tracking
         updated_uids: Set of UIDs already updated
+        leasesext_collection: Optional leasesext collection for cascade delete
 
     Returns:
-        Tuple of (delete_count, unknown_count)
+        Tuple of (delete_count, ext_delete_count, unknown_count)
     """
     logger.info("PROCESSING DELETE" + (" (DRY-RUN)" if dry_run else ""))
     delete_count = 0
+    ext_delete_count = 0
     unknown_count = 0
 
     for original_row in tqdm(delete_rows, desc="Deleting", unit="rows"):
-        deletes, unknowns = process_delete(
+        deletes, ext_deletes, unknowns = process_delete(
             original_row,
             collection,
             dry_run,
             last_updated,
             updated_uids,
             lease_tracker_collection,
+            leasesext_collection,
         )
         delete_count += deletes
+        ext_delete_count += ext_deletes
         unknown_count += unknowns
 
     logger.info("DELETE COMPLETE")
-    return delete_count, unknown_count
+    return delete_count, ext_delete_count, unknown_count
 
 
 def process_bulk_additions(
@@ -759,8 +820,8 @@ def print_summary(
     delete_count: int,
     unknown_count: int,
     skipped_count: int,
-    parsed_valid_terms_count: int,
-    mapped_records_count: int,
+    parsed_valid_terms_percentage: int,
+    mapped_records_percentage: int,
     total_add_rows: int,
 ) -> None:
     """
@@ -771,8 +832,8 @@ def print_summary(
         delete_count: Number of deletions
         unknown_count: Number of manual/skipped records
         skipped_count: Number of skipped records
-        parsed_valid_terms_count: Number of successfully parsed terms
-        mapped_records_count: Number of records mapped to AddressBase
+        parsed_valid_terms_percentage: Number of successfully parsed terms
+        mapped_records_percentage: Number of records mapped to AddressBase
         total_add_rows: Total number of add rows
     """
     logger.info("\n🔍 Summary:")
@@ -780,15 +841,15 @@ def print_summary(
     logger.info(f" - Deletions: {delete_count}")
     logger.info(f" - Manual/Skipped: {unknown_count}")
     logger.info(f" - Skipped (bad columns): {skipped_count}")
-    if total_add_rows > 0:
-        logger.info(f" - Term enrichment: {parsed_valid_terms_count/total_add_rows*100:.2f}% terms parsed successfully")
-        logger.info(f" - AddressBase mapping: {mapped_records_count/total_add_rows*100:.2f}% records mapped successfully")
+    logger.info(f" - Term enrichment percentage: {parsed_valid_terms_percentage:.2f}")
+    logger.info(f" - AddressBase mapping percentage: {mapped_records_percentage:.2f}")
 
 
 def process_changes(
     csv_path: str,
     database_name: str,
     collection_name: str,
+    collection_ext_name: str,
     connection_string: str,
     dry_run: bool = True,
 ) -> Dict[str, int]:
@@ -799,6 +860,7 @@ def process_changes(
         csv_path: Path to the change CSV file
         database_name: MongoDB database name
         collection_name: MongoDB collection name
+        collection_ext_name: MongoDB extensions collection name
         connection_string: MongoDB connection string
         dry_run: Whether to run in dry-run mode
 
@@ -825,6 +887,7 @@ def process_changes(
     try:
         with client:
             collection = client.get_collection(collection_name)
+            leasesext_collection = client.get_collection(collection_ext_name)
             lease_tracker_collection = client.get_collection("lease_tracker")
             lease_update_log_collection = client.get_collection("lease_update_log")
 
@@ -834,18 +897,19 @@ def process_changes(
             delete_rows, add_rows = read_csv_changes(csv_path)
 
             # Process deletions
-            delete_count, unknown_count = process_deletions(
+            delete_count, ext_delete_count, unknown_count = process_deletions(
                 delete_rows,
                 collection,
                 lease_tracker_collection,
                 dry_run,
                 last_updated,
                 updated_uids,
+                leasesext_collection,
             )
 
             # Enrich data
             logger.info("ENRICHING DATA" + (" (DRY-RUN)" if dry_run else ""))
-            enriched_records, parsed_valid_terms_count, mapped_records_count = process_enrichment(add_rows)
+            enriched_records, parsed_valid_terms_percentage, mapped_records_percentage = process_enrichment(add_rows)
             logger.info("ENRICHMENT COMPLETE")
 
             # Process bulk additions
@@ -865,8 +929,8 @@ def process_changes(
                 delete_count,
                 unknown_count,
                 skipped_count,
-                parsed_valid_terms_count,
-                mapped_records_count,
+                parsed_valid_terms_percentage,
+                mapped_records_percentage,
                 len(add_rows),
             )
 
@@ -889,8 +953,11 @@ def process_changes(
     return {
         "additions": add_count,
         "deletions": delete_count,
+        "extensions deleted": ext_delete_count,
         "manual_skipped": unknown_count,
         "skipped": skipped_count,
+        "term_enrichment_percentage": parsed_valid_terms_percentage,
+        "addressbase_mapping_percentage": mapped_records_percentage,
     }
 
 
@@ -920,6 +987,12 @@ def main():
         type=str,
         default=os.getenv("MONGO_COLLECTION"),
         help=f"MongoDB collection name (default from env file)",
+    )
+    parser.add_argument(
+        "--collection-ext",
+        type=str,
+        default=os.getenv("MONGO_COLLECTION_EXT"),
+        help=f"MongoDB extension collection name (default from env file)",
     )
     parser.add_argument(
         "--connection-string",
@@ -954,6 +1027,7 @@ def main():
             csv_path=args.csv_path,
             database_name=args.database,
             collection_name=args.collection,
+            collection_ext_name=args.collection_ext,
             connection_string=args.connection_string,
             dry_run=dry_run,
         )

@@ -3,12 +3,14 @@ Tests for the apply_update script.
 """
 
 import unittest
+from unittest.mock import Mock, MagicMock
 
 from src.data.apply_update import (
     extract_postcode,
     map_row,
     normalize_value,
     calculate_char_differences,
+    cascade_delete_leasesext,
     FIELD_MAP,
 )
 
@@ -265,6 +267,72 @@ class TestFieldMap(unittest.TestCase):
             "uprn", "ppd", "ro", "dol", "term", "aci",
         }
         self.assertEqual(set(FIELD_MAP.values()), expected_values)
+
+
+class TestCascadeDeleteLeasesext(unittest.TestCase):
+    """Test cascade delete functionality for leasesext collection."""
+
+    def test_cascade_delete_with_no_ids(self):
+        """Test that cascade delete returns 0 when no lease_ids provided."""
+        mock_collection = Mock()
+        result = cascade_delete_leasesext([], mock_collection, dry_run=False)
+        self.assertEqual(result, 0)
+        mock_collection.delete_many.assert_not_called()
+
+    def test_cascade_delete_with_none_collection(self):
+        """Test that cascade delete returns 0 when collection is None."""
+        result = cascade_delete_leasesext([1, 2, 3], None, dry_run=False)
+        self.assertEqual(result, 0)
+
+    def test_cascade_delete_dry_run(self):
+        """Test cascade delete in dry-run mode counts documents."""
+        mock_collection = Mock()
+        mock_collection.count_documents.return_value = 3
+
+        lease_ids = ["id1", "id2", "id3"]
+        result = cascade_delete_leasesext(lease_ids, mock_collection, dry_run=True)
+
+        self.assertEqual(result, 3)
+        mock_collection.count_documents.assert_called_once_with({"lid": {"$in": lease_ids}})
+        mock_collection.delete_many.assert_not_called()
+
+    def test_cascade_delete_actual(self):
+        """Test cascade delete in actual mode deletes documents."""
+        mock_collection = Mock()
+        mock_result = Mock()
+        mock_result.deleted_count = 3
+        mock_collection.delete_many.return_value = mock_result
+
+        lease_ids = ["id1", "id2", "id3"]
+        result = cascade_delete_leasesext(lease_ids, mock_collection, dry_run=False)
+
+        self.assertEqual(result, 3)
+        mock_collection.delete_many.assert_called_once_with({"lid": {"$in": lease_ids}})
+        mock_collection.count_documents.assert_not_called()
+
+    def test_cascade_delete_dry_run_zero_matches(self):
+        """Test cascade delete in dry-run mode with no matching documents."""
+        mock_collection = Mock()
+        mock_collection.count_documents.return_value = 0
+
+        lease_ids = ["id1", "id2"]
+        result = cascade_delete_leasesext(lease_ids, mock_collection, dry_run=True)
+
+        self.assertEqual(result, 0)
+        mock_collection.count_documents.assert_called_once()
+
+    def test_cascade_delete_actual_zero_matches(self):
+        """Test cascade delete in actual mode with no matching documents."""
+        mock_collection = Mock()
+        mock_result = Mock()
+        mock_result.deleted_count = 0
+        mock_collection.delete_many.return_value = mock_result
+
+        lease_ids = ["id1", "id2"]
+        result = cascade_delete_leasesext(lease_ids, mock_collection, dry_run=False)
+
+        self.assertEqual(result, 0)
+        mock_collection.delete_many.assert_called_once()
 
 
 if __name__ == "__main__":
