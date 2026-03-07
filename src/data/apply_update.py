@@ -712,6 +712,7 @@ def process_bulk_additions(
     dry_run: bool,
     last_updated: Optional[str],
     updated_uids: Set[str],
+    leasesext_collection
 ) -> int:
     """
     Process all addition operations in bulk.
@@ -724,6 +725,7 @@ def process_bulk_additions(
         dry_run: Whether to run in dry-run mode
         last_updated: Version string for tracking
         updated_uids: Set of UIDs already updated
+        leasesext_collection: MongoDB leasesext collection
 
     Returns:
         Number of records added
@@ -743,11 +745,7 @@ def process_bulk_additions(
     batch_count = 0
 
     for idx, original_row in enumerate(tqdm(add_rows, desc="Adding", unit="rows")):
-        # Use enriched record if available, otherwise fall back to map_row
-        if idx < len(enriched_records) and enriched_records[idx]:
-            mapped_row = enriched_records[idx]
-        else:
-            mapped_row = map_row(original_row)
+        mapped_row = map_row(original_row)
         batch.append(InsertOne(mapped_row))
 
         # Prepare LeaseTracker upserts for unique UIDs
@@ -972,7 +970,6 @@ def process_changes(
             enriched_records, parsed_valid_terms_percentage, mapped_records_percentage = process_enrichment(add_rows)
             logger.info("ENRICHMENT COMPLETE")
 
-            # Write enriched records to CSV if requested
             if write_enriched:
                 output_csv_path = csv_path.parent / "enriched_results.csv"
                 write_enriched_records_to_csv(enriched_records, output_csv_path)
@@ -986,6 +983,7 @@ def process_changes(
                 dry_run,
                 last_updated,
                 updated_uids,
+                leasesext_collection
             )
 
             # Print summary
