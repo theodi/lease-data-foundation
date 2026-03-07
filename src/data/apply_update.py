@@ -212,6 +212,7 @@ def process_term_string(add_rows: list[dict[str, str]], enriched_records: list[d
     for idx, row in enumerate(tqdm(add_rows, desc="Regex extraction", unit="rows")):
         # Map the row first to get the format expected by process_record
         mapped_row = map_row(row)
+        enriched_record = {"uid": mapped_row["uid"]}
 
         # Process with regex extractor
         try:
@@ -221,13 +222,10 @@ def process_term_string(add_rows: list[dict[str, str]], enriched_records: list[d
             result = None
 
         if result and result.get("regex_is_valid"):
-            # Remove the regex_is_valid key and add to enriched records
             result_copy = result.copy()
-            result_copy.pop("regex_is_valid", None)
-
-            # Merge with mapped row data
-            enriched_record = {**mapped_row, **result_copy}
-            enriched_records[idx] = enriched_record
+            for key in result_copy:
+                if key != "regex_is_valid":
+                    enriched_record[key] = result_copy[key]
             regex_valid_count += 1
         else:
             if mapped_row and mapped_row.get("term") and mapped_row["term"].strip():
@@ -236,6 +234,7 @@ def process_term_string(add_rows: list[dict[str, str]], enriched_records: list[d
                 t5_needed_records.append(mapped_row)
             else:
                 empty_term_count += 1
+        enriched_records[idx] = enriched_record
 
     regex_percentage = (regex_valid_count / total_records * 100) if total_records > 0 else 0
     logger.info(f"✅ Regex extraction: {regex_valid_count}/{total_records} valid ({regex_percentage:.2f}%)")
@@ -263,9 +262,9 @@ def process_term_string(add_rows: list[dict[str, str]], enriched_records: list[d
                         # Remove t5_is_valid key and merge with mapped row
                         result_copy = result.copy()
                         result_copy.pop("t5_is_valid", None)
+                        result_copy["uid"] = mapped_row["uid"]
 
-                        enriched_record = {**mapped_row, **result_copy}
-                        enriched_records[original_idx] = enriched_record
+                        enriched_records[original_idx] = result_copy
                         t5_valid_count += 1
                     else:
                         # T5 failed, add minimal record with just uid
@@ -286,6 +285,17 @@ def process_term_string(add_rows: list[dict[str, str]], enriched_records: list[d
     total_percentage = (total_valid / total_records * 100) if total_records > 0 else 0
     logger.info(f"📊 Total lease term extraction: {total_valid}/{total_records} valid ({total_percentage:.2f}%)")
 
+    # iterate through enriched_records and rename keys
+    for idx in range(total_records):
+        if enriched_records[idx] is not None:
+            record = enriched_records[idx]
+            # Rename keys if they exist
+            if "start_date" in record:
+                record["st"] = record.pop("start_date")
+            if "expiry_date" in record:
+                record["exp"] = record.pop("expiry_date")
+            if "tenure_years" in record:
+                record["ty"] = int(record.pop("tenure_years"))
     return total_percentage
 
 
@@ -371,12 +381,12 @@ def map_to_addressbase(
                 }
                 if rec.get("latitude") and rec.get("longitude"):
                     # GeoJSON Point format: [longitude, latitude]
-                    ab_data["location"] = {
+                    ab_data["loc"] = {
                         "type": "Point",
                         "coordinates": [float(rec.get("longitude")), float(rec.get("latitude"))]
                     }
                 # Remove None values to keep documents clean
-                ab_data = {k: v for k, v in ab_data.items() if v is not None}
+                ab_data = {k: v for k, v in ab_data.items() if v is not None and v != ""}
                 uid_to_ab_data[uid] = ab_data
 
         # Merge AddressBase data into enriched_records
@@ -815,6 +825,54 @@ def update_database_log(
     logger.info(f"✅ Updated LeaseUpdateLog for version {last_updated}")
 
 
+def write_enriched_records_to_csv(
+    enriched_records: List[Dict[str, Any]],
+    csv_path: Path,
+) -> None:
+    """
+    Write enriched records to a CSV file.
+
+    Args:
+        enriched_records: List of enriched record dictionaries
+        csv_path: Path where the CSV file should be written
+    """
+    if not enriched_records:
+        logger.warning("⚠️ No enriched records to write to CSV")
+        return
+
+    # Get all unique field names from all records
+    fieldnames = set()
+    for record in enriched_records:
+        if record:
+            fieldnames.update(record.keys())
+
+    # Sort fieldnames for consistent output, but put uid first if it exists
+    fieldnames = sorted(fieldnames)
+    if "uid" in fieldnames:
+        fieldnames.remove("uid")
+        fieldnames = ["uid"] + fieldnames
+
+    try:
+        with open(csv_path, "w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+
+            for record in enriched_records:
+                if record:
+                    # Handle nested fields (like location) by converting to string
+                    row = {}
+                    for key, value in record.items():
+                        if isinstance(value, (dict, list)):
+                            row[key] = str(value)
+                        else:
+                            row[key] = value
+                    writer.writerow(row)
+
+        logger.info(f"✅ Wrote {len(enriched_records)} enriched records to {csv_path}")
+    except Exception as e:
+        logger.error(f"❌ Failed to write enriched records to CSV: {e}")
+
+
 def print_summary(
     add_count: int,
     delete_count: int,
@@ -852,6 +910,7 @@ def process_changes(
     collection_ext_name: str,
     connection_string: str,
     dry_run: bool = True,
+    write_enriched: bool = False,
 ) -> Dict[str, int]:
     """
     Process changes from a CSV file.
@@ -863,6 +922,7 @@ def process_changes(
         collection_ext_name: MongoDB extensions collection name
         connection_string: MongoDB connection string
         dry_run: Whether to run in dry-run mode
+        write_enriched: Whether to write enriched records to CSV file
 
     Returns:
         Dictionary with operation counts
@@ -911,6 +971,11 @@ def process_changes(
             logger.info("ENRICHING DATA" + (" (DRY-RUN)" if dry_run else ""))
             enriched_records, parsed_valid_terms_percentage, mapped_records_percentage = process_enrichment(add_rows)
             logger.info("ENRICHMENT COMPLETE")
+
+            # Write enriched records to CSV if requested
+            if write_enriched:
+                output_csv_path = csv_path.parent / "enriched_results.csv"
+                write_enriched_records_to_csv(enriched_records, output_csv_path)
 
             # Process bulk additions
             add_count = process_bulk_additions(
@@ -1005,6 +1070,11 @@ def main():
         action="store_true",
         help="Enable debug logging",
     )
+    parser.add_argument(
+        "--write-enriched",
+        action="store_true",
+        help="Write enriched records to enriched_results.csv in the same folder as input CSV",
+    )
 
     args = parser.parse_args()
 
@@ -1030,6 +1100,7 @@ def main():
             collection_ext_name=args.collection_ext,
             connection_string=args.connection_string,
             dry_run=dry_run,
+            write_enriched=args.write_enriched,
         )
         logger.info(f"✅ Processing complete: {result}")
     except Exception as e:

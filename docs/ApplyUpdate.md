@@ -49,6 +49,14 @@ python -m src.data.apply_update lease_data/LEASES_COU_2026_03.csv \
   --connection-string "mongodb://user:pass@remote-host:27017"
 ```
 
+#### Dry-run with enrichment's export (to preview changes before enrichment)
+
+Writes enriched results (lease term parsing and AddressBase mapping derived) into `lease_data/enriched_results.csv` for review before applying to database.
+
+```bash
+python -m src.data.apply_update lease_data/LEASES_COU_2026_02.csv --write-enriched
+```
+
 ## CSV Format
 
 The script expects CSV files with the following structure:
