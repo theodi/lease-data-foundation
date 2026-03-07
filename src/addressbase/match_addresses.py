@@ -575,12 +575,19 @@ def parse_and_prepare_records(batch: list[dict]) -> tuple[list[dict], list[dict]
                     parsed = parse_address_string(apd_original)
                     house_number = parsed.get("house_number", parsed.get("house", "")).strip()
 
-            postcode = parsed.get("postcode", "").strip()
-            city = parsed.get("city", "").strip()
             road = parsed.get("road", "").strip()
 
             if not house_number or not road:
-                parse_errors.append({"uid": uid, "apd_original": apd_original, "apd": apd, "pc": pc, "uprn": uprn})
+                # Try parsing the original unnormalised address as a last resort
+                parsed = parse_address_string(apd_original)
+                house_number = parsed.get("house_number", parsed.get("house", "")).strip()
+                road = parsed.get("road", "").strip()
+
+            postcode = parsed.get("postcode", "").strip()
+            city = parsed.get("city", "").strip()
+
+            if not house_number or not road:
+                parse_errors.append({"uid": uid, "apd_original": apd_original, "apd": apd, "pc": pc, "uprn": uprn, "house_number": house_number, "road": road})
                 continue
 
             # Determine the final postcode value

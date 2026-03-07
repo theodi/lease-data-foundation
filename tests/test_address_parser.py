@@ -165,7 +165,7 @@ class TestAddressParser(unittest.TestCase):
 
     def test_address5(self):
         """Test that parse_address_string returns a dictionary."""
-        address = "4 MOXON STREET, LONDON W1U 4EW"
+        address = "11 WOODROLFE PARK, TOLLESBURY, MALDON CM9 8TB"
         result = parse_address_string(address)
         print(result)
 

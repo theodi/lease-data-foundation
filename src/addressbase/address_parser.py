@@ -22,6 +22,7 @@ BUILDING_KEYWORDS = [
     "ARCADE",
     "CENTRE",
     "CENTER",
+    "PARK"
 ]
 
 
