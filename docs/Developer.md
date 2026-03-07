@@ -54,11 +54,16 @@ Warning: This will drop the existing collection in Atlas before importing the ne
 
 Warning: Check the indexes in Atlas before importing, as they may need to be recreated after the import.
 
+leases:
 _id -> asc (1), Unique
 uid -> asc (1)
 pc -> asc (1)
 
-```
+leasesext:
+lid -> asc (1)
+
+In terminal:
+```bash
 mongoimport --uri="mongodb+srv://<user>:<password>@luster0.dearuu.mongodb.net/leases" \
             --collection=leases \
             --file="path/to/your_exported_file.json" \
