@@ -53,6 +53,9 @@ PG_CONFIG = {
     "dbname": os.getenv("POSTGRES_DB", "address_base")
 }
 
+# Residential classification codes
+RESIDENTIAL_CLASSES = {"R", "X", "P"}
+
 # Field mapping from CSV to MongoDB short keys
 FIELD_MAP = {
     "Unique Identifier": "uid",
@@ -368,13 +371,13 @@ def map_to_addressbase(
                 ab_data = {
                     "aup": rec.get("uprn"),
                     "bn": rec.get("building_number"),
-                    "bnam": rec.get("building_name"),
-                    "tf": rec.get("thoroughfare"),
-                    "pt": rec.get("post_town"),
-                    "apc": rec.get("postcode"),
+                    "bnam": str(rec.get("building_name")).strip(),
+                    "tf": str(rec.get("thoroughfare")).strip(),
+                    "pt": str(rec.get("post_town")).strip(),
+                    "apc": str(rec.get("postcode")).strip(),
                     "lat": rec.get("latitude"),
                     "lon": rec.get("longitude"),
-                    "cl": rec.get("class"),
+                    "cl": str(rec.get("class")).strip(),
                     "ud": rec.get("udprn"),
                     "xc": rec.get("x_coordinate"),
                     "yc": rec.get("y_coordinate"),
@@ -713,9 +716,9 @@ def process_bulk_additions(
     last_updated: Optional[str],
     updated_uids: Set[str],
     leasesext_collection
-) -> int:
+) -> tuple[int, int]:
     """
-    Process all addition operations in bulk.
+    Process all addition operations in bulk for both leases and leasesext.
 
     Args:
         add_rows: List of rows to add
@@ -728,61 +731,119 @@ def process_bulk_additions(
         leasesext_collection: MongoDB leasesext collection
 
     Returns:
-        Number of records added
+        Number of records added, number of commercial records skipped
     """
     logger.info("BULK ADDING" + (" (DRY-RUN)" if dry_run else ""))
 
     if dry_run:
         # Dry run: just count
-        for _ in tqdm(add_rows, desc="Adding (dry-run)", unit="rows"):
-            pass
-        return len(add_rows)
+        add_count = 0
+        commercial_count = 0
+        for idx, original_row in enumerate(tqdm(add_rows, desc="Adding (dry-run)", unit="rows")):
+            enriched_record = enriched_records[idx]
+            # Process only if we are sure it is not commercial (based on AddressBase class)
+            if str(enriched_record.get("cl", "R")).strip().upper() in RESIDENTIAL_CLASSES:
+                add_count += 1
+            else:
+                commercial_count += 1
+        return add_count, commercial_count
 
     # Actual bulk add
     BATCH_SIZE = 1000
     batch = []
+    enriched_batch = []
     lease_tracker_ops = []
     batch_count = 0
+    commercial_count = 0
 
     for idx, original_row in enumerate(tqdm(add_rows, desc="Adding", unit="rows")):
         mapped_row = map_row(original_row)
-        batch.append(InsertOne(mapped_row))
+        enriched_record = enriched_records[idx]
+        # Process only if we are sure it is not commercial (based on AddressBase class)
+        if enriched_record.get("cl", "R") in RESIDENTIAL_CLASSES:
+            batch.append(InsertOne(mapped_row))
+            enriched_batch.append(enriched_record)
 
-        # Prepare LeaseTracker upserts for unique UIDs
-        uid = mapped_row["uid"]
-        if last_updated and uid not in updated_uids:
-            lease_tracker_ops.append(UpdateOne(
-                {"uid": uid},
-                {"$set": {"lastUpdated": last_updated}},
-                upsert=True,
-            ))
-            updated_uids.add(uid)
+            # Prepare LeaseTracker upserts for unique UIDs
+            uid = mapped_row["uid"]
+            if last_updated and uid not in updated_uids:
+                lease_tracker_ops.append(UpdateOne(
+                    {"uid": uid},
+                    {"$set": {"lastUpdated": last_updated}},
+                    upsert=True,
+                ))
+                updated_uids.add(uid)
+        else:
+            commercial_count += 1
 
         if len(batch) >= BATCH_SIZE:
             try:
-                collection.bulk_write(batch, ordered=False)
+                # Insert to main collection and get result
+                result = collection.bulk_write(batch, ordered=False)
                 batch_count += len(batch)
                 logger.info(f"📊 Bulk added {batch_count} records so far...")
+
+                # Get inserted IDs and add to leasesext
+                inserted_ids = result.bulk_api_result.get("inserted")
+                # Prepare leasesext batch with lid references
+                leasesext_batch = []
+                for i, inserted_id in enumerate(inserted_ids):
+                    enriched_record = enriched_batch[i]
+                    enriched_record["lid"] = inserted_id
+                    leasesext_batch.append(InsertOne(enriched_record))
+
+                # Insert to leasesext collection
+                leasesext_collection.bulk_write(leasesext_batch, ordered=False)
+                logger.info(f"📊 Added {len(leasesext_batch)} enriched records to leasesext")
+
             except BulkWriteError as e:
                 logger.warning(f"Bulk write error: {e.details}")
                 batch_count += len(batch) - len(e.details.get("writeErrors", []))
+
+                # Handle partial success for leasesext
+                inserted_ids = e.details.get("nInserted", 0)
+                if inserted_ids > 0:
+                    logger.warning(f"⚠️ Partial insert: {inserted_ids} records inserted, some failed")
+
             batch = []
+            enriched_batch = []
 
     # Process remaining batch
     if batch:
         try:
-            collection.bulk_write(batch, ordered=False)
+            # Insert to main collection and get result
+            result = collection.bulk_write(batch, ordered=False)
             batch_count += len(batch)
             logger.info(f"📊 Bulk added {batch_count} records in total.")
+
+            # Get inserted IDs and add to leasesext
+            inserted_ids = result.bulk_api_result.get("inserted")
+            # Prepare leasesext batch with lid references
+            leasesext_batch = []
+            for i, inserted_id in enumerate(inserted_ids):
+                enriched_record = enriched_batch[i].copy() if enriched_batch[i] else {}
+                enriched_record["lid"] = inserted_id
+                leasesext_batch.append(InsertOne(enriched_record))
+
+            # Insert to leasesext collection
+            if leasesext_batch:
+                leasesext_collection.bulk_write(leasesext_batch, ordered=False)
+                logger.info(f"📊 Added {len(leasesext_batch)} enriched records to leasesext")
+
         except BulkWriteError as e:
             logger.warning(f"Bulk write error: {e.details}")
             batch_count += len(batch) - len(e.details.get("writeErrors", []))
+
+            # Handle partial success for leasesext
+            inserted_ids = e.details.get("nInserted", 0)
+            if inserted_ids > 0:
+                logger.warning(f"⚠️ Partial insert: {inserted_ids} records inserted, some failed")
 
     # Update LeaseTracker
     if lease_tracker_ops:
         lease_tracker_collection.bulk_write(lease_tracker_ops)
 
-    return batch_count
+    return batch_count, commercial_count
 
 
 def update_database_log(
@@ -879,6 +940,7 @@ def print_summary(
     parsed_valid_terms_percentage: int,
     mapped_records_percentage: int,
     total_add_rows: int,
+    commercial_count: int,
 ) -> None:
     """
     Print summary of operations.
@@ -891,10 +953,12 @@ def print_summary(
         parsed_valid_terms_percentage: Number of successfully parsed terms
         mapped_records_percentage: Number of records mapped to AddressBase
         total_add_rows: Total number of add rows
+        commercial_count: Number of commercial records skipped
     """
     logger.info("\n🔍 Summary:")
     logger.info(f" - Additions: {add_count}")
     logger.info(f" - Deletions: {delete_count}")
+    logger.info(f" - Commercial skipped: {commercial_count}")
     logger.info(f" - Manual/Skipped: {unknown_count}")
     logger.info(f" - Skipped (bad columns): {skipped_count}")
     logger.info(f" - Term enrichment percentage: {parsed_valid_terms_percentage:.2f}")
@@ -975,7 +1039,7 @@ def process_changes(
                 write_enriched_records_to_csv(enriched_records, output_csv_path)
 
             # Process bulk additions
-            add_count = process_bulk_additions(
+            add_count, commercial_count = process_bulk_additions(
                 add_rows,
                 enriched_records,
                 collection,
@@ -995,6 +1059,7 @@ def process_changes(
                 parsed_valid_terms_percentage,
                 mapped_records_percentage,
                 len(add_rows),
+                commercial_count
             )
 
             # Update database log
@@ -1017,6 +1082,7 @@ def process_changes(
         "additions": add_count,
         "deletions": delete_count,
         "extensions deleted": ext_delete_count,
+        "commercial_skipped": commercial_count,
         "manual_skipped": unknown_count,
         "skipped": skipped_count,
         "term_enrichment_percentage": parsed_valid_terms_percentage,
