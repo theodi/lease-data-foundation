@@ -1,0 +1,96 @@
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: lease-postgres
+    restart: unless-stopped
+    env_file:
+      - docker-compose.env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    networks:
+      - lease-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: lease-pgadmin
+    restart: unless-stopped
+    env_file:
+      - docker-compose.env
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD}
+      PGADMIN_CONFIG_SERVER_MODE: 'True'
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: 'True'
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    networks:
+      - lease-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  jupyter:
+    image: jupyter/datascience-notebook:latest
+    container_name: lease-jupyter
+    restart: unless-stopped
+    env_file:
+      - docker-compose.env
+    environment:
+      JUPYTER_ENABLE_LAB: "yes"
+      JUPYTER_TOKEN: ${JUPYTER_TOKEN}
+      GRANT_SUDO: "yes"
+      # Database connection environment variables
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - ./notebooks:/home/jovyan/work
+      - ./src:/home/jovyan/src:ro
+      - ./data:/home/jovyan/data
+      - ./lease_data:/home/jovyan/lease_data:ro
+    ports:
+      - "${JUPYTER_PORT:-8888}:8888"
+    networks:
+      - lease-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    user: root
+    working_dir: /home/jovyan/work
+    command: >
+      bash -c "
+      python3 -m venv /home/jovyan/venv &&
+      . /home/jovyan/venv/bin/activate &&
+      pip install --upgrade pip &&
+      pip install -r /home/jovyan/work/requirements.txt &&
+      chown -R jovyan:users /home/jovyan &&
+      sudo -u jovyan bash -c '. /home/jovyan/venv/bin/activate && start-notebook.sh --NotebookApp.token=\"${JUPYTER_TOKEN}\" --NotebookApp.password=\"\" --NotebookApp.allow_origin=\"*\" --NotebookApp.base_url=\"/\" --ip=0.0.0.0'
+      "
+
+volumes:
+  postgres_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+networks:
+  lease-network:
+    driver: bridge
+
