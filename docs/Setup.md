@@ -64,3 +64,10 @@ make -j$(nproc)
 sudo make install
 sudo ldconfig
 ```
+
+### Load Data
+
+Create venv and install dependencies (`uv sync`)
+```
+python -m src.addressbase.load_data
+```

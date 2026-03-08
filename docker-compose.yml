@@ -3,6 +3,7 @@ services:
   postgres:
     image: postgis/postgis:15-3.4
     container_name: lease-postgres
+    shm_size: 4gb
     restart: unless-stopped
     env_file:
       - docker-compose.env
