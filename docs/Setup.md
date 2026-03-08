@@ -26,6 +26,7 @@ http://localhost:5050
 3. **Connection Tab:**
 * **Host name/address:** `host.docker.internal`
 > **Note:** This is a special DNS name provided by Docker Desktop for Mac to reach your computer.
+> **Note:** For docker compose based setup use postgres service name.
 
 
 * **Port:** `5432`
@@ -43,4 +44,23 @@ LIMIT 100;
 
 ```
 brew install libpostal
+```
+
+On linux:
+
+```
+sudo apt-get install curl autoconf automake libtool pkg-config build-essential
+```
+
+```
+git clone https://github.com/openvenues/libpostal
+cd libpostal
+./bootstrap.sh
+```
+
+```
+./configure --datadir=/usr/local/share/libpostal
+make -j$(nproc)
+sudo make install
+sudo ldconfig
 ```

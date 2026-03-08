@@ -8,6 +8,9 @@ This guide provides instructions for setting up the production environment using
 - Docker Compose V2+
 - Sufficient disk space for PostgreSQL data and Jupyter notebooks
 - Secure server environment with firewall configured
+- uv: `snap install astral-uv --classic`
+- venv: `apt install python3.12-venv`
+- C Compiler: `apt install -y build-essential`
 
 ## Services
 
@@ -72,7 +75,7 @@ chmod 600 docker-compose.env
 ### 5. Start Services
 
 ```bash
-docker compose up -d
+docker compose --env-file ./docker-compose.env up -d
 ```
 
 Check service status:
