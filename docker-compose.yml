@@ -81,7 +81,7 @@ services:
       . /home/jovyan/venv/bin/activate &&
       pip install --upgrade pip &&
       pip install -r /home/jovyan/work/requirements.txt &&
-      chown -R jovyan:users /home/jovyan &&
+      chown -R jovyan:users /home/jovyan/venv /home/jovyan/work /home/jovyan/data && 
       sudo -u jovyan bash -c '. /home/jovyan/venv/bin/activate && start-notebook.sh --NotebookApp.token=\"${JUPYTER_TOKEN}\" --NotebookApp.password=\"\" --NotebookApp.allow_origin=\"*\" --NotebookApp.base_url=\"/\" --ip=0.0.0.0'
       "
 
