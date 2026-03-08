@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Optional, Dict, List, Any, Set
 
 from dotenv import load_dotenv
-from pymongo import InsertOne, UpdateOne
+from pymongo import InsertOne, UpdateOne, DeleteOne
 from pymongo.errors import BulkWriteError
 from tqdm import tqdm
 import psycopg2
@@ -425,162 +425,6 @@ def map_to_addressbase(
     return mapped_percentage
 
 
-def process_delete(
-    original_row: Dict[str, str],
-    collection,
-    dry_run: bool,
-    last_updated: Optional[str],
-    updated_uids: Set[str],
-    lease_tracker_collection,
-    leasesext_collection,
-) -> tuple[int, int, int]:
-    """
-    Process a single delete operation with cascade delete support.
-
-    Args:
-        original_row: CSV row to delete
-        collection: MongoDB collection (leases)
-        dry_run: Whether to run in dry-run mode
-        last_updated: Version string for tracking
-        updated_uids: Set of UIDs already updated
-        lease_tracker_collection: LeaseTracker collection
-        leasesext_collection: Optional leasesext collection for cascade delete
-
-    Returns:
-        Tuple of (delete_count, leasessext_del_count, unknown_count)
-    """
-    mapped_row = map_row(original_row)
-    uid = mapped_row["uid"]
-    ro = mapped_row["ro"]
-    apid = mapped_row["apid"]
-
-    # Find all records with this UID
-    db_matches = list(collection.find({"uid": uid}))
-
-    # Filter to candidates matching RO and APID
-    candidate_matches = [
-        record for record in db_matches
-        if normalize_value(record.get("ro")) == ro
-        and normalize_value(record.get("apid")) == apid
-    ]
-
-    if not candidate_matches:
-        if DEBUG:
-            logger.info(f"❌ Delete UID {uid} — no matches for RO {ro} and APID {apid}")
-        return 0, 0, 1
-
-    # If exactly one candidate, delete it directly
-    if len(candidate_matches) == 1:
-        if DEBUG:
-            logger.info(f"🗑️ Deleting single candidate match for UID {uid}")
-        lease_id = candidate_matches[0]["_id"]
-        if not dry_run:
-            collection.delete_one({"_id": lease_id})
-            if last_updated and uid not in updated_uids:
-                lease_tracker_collection.update_one(
-                    {"uid": uid},
-                    {"$set": {"lastUpdated": last_updated}},
-                    upsert=True,
-                )
-                updated_uids.add(uid)
-
-        # Cascade delete from leasesext
-        leasesext_del_count = cascade_delete_leasesext([lease_id], leasesext_collection, dry_run)
-
-        return 1, leasesext_del_count, 0
-
-    # Check for exact matches across all fields
-    exact_matches = []
-    for db_record in candidate_matches:
-        is_exact = all(
-            normalize_value(original_row.get(csv_key)) == normalize_value(db_record.get(db_key))
-            for csv_key, db_key in FIELD_MAP.items()
-        )
-        if is_exact:
-            exact_matches.append(db_record)
-
-    if exact_matches:
-        if DEBUG:
-            logger.info(f"🗑️ Would delete {len(exact_matches)} record(s) for UID {uid}")
-        ids = [doc["_id"] for doc in exact_matches]
-        if not dry_run:
-            collection.delete_many({"_id": {"$in": ids}})
-            if last_updated and uid not in updated_uids:
-                lease_tracker_collection.update_one(
-                    {"uid": uid},
-                    {"$set": {"lastUpdated": last_updated}},
-                    upsert=True,
-                )
-                updated_uids.add(uid)
-
-        # Cascade delete from leasesext
-        leasesext_del_count = cascade_delete_leasesext(ids, leasesext_collection, dry_run)
-
-        return len(exact_matches), leasesext_del_count, 0
-
-    # Calculate character differences for ambiguous deletion
-    char_diff_details = []
-    for record in candidate_matches:
-        total_char_diffs, diff_details = calculate_char_differences(original_row, record)
-        if diff_details:
-            char_diff_details.append({
-                "_id": record["_id"],
-                "total_diffs": total_char_diffs,
-                "details": diff_details,
-            })
-
-    # If only 1 character difference total, treat as exact match
-    total_char_diffs = sum(detail["total_diffs"] for detail in char_diff_details)
-    if total_char_diffs == 1:
-        ids = [doc["_id"] for doc in candidate_matches]
-        if not dry_run:
-            collection.delete_many({"_id": {"$in": ids}})
-            if last_updated and uid not in updated_uids:
-                lease_tracker_collection.update_one(
-                    {"uid": uid},
-                    {"$set": {"lastUpdated": last_updated}},
-                    upsert=True,
-                )
-                updated_uids.add(uid)
-
-        # Cascade delete from leasesext
-        leasesext_del_count = cascade_delete_leasesext(ids, leasesext_collection, dry_run)
-
-        return len(candidate_matches), leasesext_del_count, 0
-
-    # Ambiguous deletion - prompt user
-    logger.warning(f"⚠️ Ambiguous deletion for UID {uid} — no exact match:")
-    for detail in char_diff_details:
-        logger.warning(f"   ⚠️ _id: {detail['_id']}")
-        for diff in detail["details"]:
-            logger.warning(
-                f"      🔸 {diff['field']}: \"{diff['csv_val']}\" ≠ \"{diff['db_val']}\" "
-                f"(char diff: {diff['char_diff']})"
-            )
-    logger.warning(f"   🔢 Total character differences: {total_char_diffs}")
-
-    choice = prompt_user("❓ [k]eep DB, [d]elete anyway, [s]kip? (k/d/s): ")
-
-    if choice == "d":
-        ids = [doc["_id"] for doc in candidate_matches]
-        if not dry_run:
-            collection.delete_many({"_id": {"$in": ids}})
-            if last_updated and uid not in updated_uids:
-                lease_tracker_collection.update_one(
-                    {"uid": uid},
-                    {"$set": {"lastUpdated": last_updated}},
-                    upsert=True,
-                )
-                updated_uids.add(uid)
-
-        # Cascade delete from leasesext
-        leasesext_del_count = cascade_delete_leasesext(ids, leasesext_collection, dry_run)
-
-        return len(candidate_matches), leasesext_del_count, 0
-    else:
-        return 0, 0, 1
-
-
 def cascade_delete_leasesext(
     lease_ids: List[Any],
     leasesext_collection,
@@ -600,7 +444,7 @@ def cascade_delete_leasesext(
     Returns:
         Number of leasesext records deleted
     """
-    if not lease_ids or leasesext_collection is None:
+    if not lease_ids:
         return 0
 
     if dry_run:
@@ -670,7 +514,7 @@ def process_deletions(
     leasesext_collection=None,
 ) -> tuple[int, int, int]:
     """
-    Process all deletion operations.
+    Process all deletion operations in batches.
 
     Args:
         delete_rows: List of rows to delete
@@ -685,13 +529,25 @@ def process_deletions(
         Tuple of (delete_count, ext_delete_count, unknown_count)
     """
     logger.info("PROCESSING DELETE" + (" (DRY-RUN)" if dry_run else ""))
+
+    if not delete_rows:
+        logger.info("DELETE COMPLETE (no rows to delete)")
+        return 0, 0, 0
+
     delete_count = 0
     ext_delete_count = 0
     unknown_count = 0
 
-    for original_row in tqdm(delete_rows, desc="Deleting", unit="rows"):
-        deletes, ext_deletes, unknowns = process_delete(
-            original_row,
+    BATCH_SIZE = 500  # Process deletions in batches
+    total_rows = len(delete_rows)
+
+    for batch_start in tqdm(range(0, total_rows, BATCH_SIZE), desc="Deleting (batches)", unit="batch"):
+        batch_end = min(batch_start + BATCH_SIZE, total_rows)
+        batch_rows = delete_rows[batch_start:batch_end]
+
+        # Process batch
+        batch_deletes, batch_ext_deletes, batch_unknowns = process_delete_batch(
+            batch_rows,
             collection,
             dry_run,
             last_updated,
@@ -699,11 +555,230 @@ def process_deletions(
             lease_tracker_collection,
             leasesext_collection,
         )
-        delete_count += deletes
-        ext_delete_count += ext_deletes
-        unknown_count += unknowns
+
+        delete_count += batch_deletes
+        ext_delete_count += batch_ext_deletes
+        unknown_count += batch_unknowns
 
     logger.info("DELETE COMPLETE")
+    return delete_count, ext_delete_count, unknown_count
+
+
+def process_delete_batch(
+    batch_rows: List[Dict[str, str]],
+    collection,
+    dry_run: bool,
+    last_updated: Optional[str],
+    updated_uids: Set[str],
+    lease_tracker_collection,
+    leasesext_collection,
+) -> tuple[int, int, int]:
+    """
+    Process a batch of delete operations efficiently.
+
+    Args:
+        batch_rows: Batch of CSV rows to delete
+        collection: MongoDB collection (leases)
+        dry_run: Whether to run in dry-run mode
+        last_updated: Version string for tracking
+        updated_uids: Set of UIDs already updated
+        lease_tracker_collection: LeaseTracker collection
+        leasesext_collection: Optional leasesext collection for cascade delete
+
+    Returns:
+        Tuple of (delete_count, leasesext_del_count, unknown_count)
+    """
+    # Map all rows and extract UIDs
+    mapped_rows = [map_row(row) for row in batch_rows]
+    uids = [row["uid"] for row in mapped_rows]
+
+    # Batch fetch all records with these UIDs
+    db_records = list(collection.find({"uid": {"$in": uids}}))
+
+    # Create a lookup dictionary: uid -> list of db records
+    uid_to_records: Dict[str, List[Dict[str, Any]]] = {}
+    for record in db_records:
+        uid = record.get("uid")
+        if uid:
+            if uid not in uid_to_records:
+                uid_to_records[uid] = []
+            uid_to_records[uid].append(record)
+
+    # Process each deletion and collect operations
+    delete_ops = []
+    lease_tracker_ops = []
+    lease_ids_to_cascade = []
+    delete_count = 0
+    unknown_count = 0
+    ambiguous_cases = []
+
+    for original_row, mapped_row in zip(batch_rows, mapped_rows):
+        uid = mapped_row["uid"]
+        ro = mapped_row["ro"]
+        apid = mapped_row["apid"]
+
+        # Get records for this UID
+        db_matches = uid_to_records.get(uid, [])
+
+        # Filter to candidates matching RO and APID
+        candidate_matches = [
+            record for record in db_matches
+            if normalize_value(record.get("ro")) == ro
+            and normalize_value(record.get("apid")) == apid
+        ]
+
+        if not candidate_matches:
+            if DEBUG:
+                logger.debug(f"❌ Delete UID {uid} — no matches for RO {ro} and APID {apid}")
+            unknown_count += 1
+            continue
+
+        # If exactly one candidate, delete it directly
+        if len(candidate_matches) == 1:
+            if DEBUG:
+                logger.info(f"🗑️ Deleting single candidate match for UID {uid}")
+            lease_id = candidate_matches[0]["_id"]
+            delete_ops.append(DeleteOne({"_id": lease_id}))
+            lease_ids_to_cascade.append(lease_id)
+            delete_count += 1
+
+            # Schedule LeaseTracker update (batch it, don't execute immediately!)
+            if last_updated and uid not in updated_uids:
+                lease_tracker_ops.append(UpdateOne(
+                    {"uid": uid},
+                    {"$set": {"lastUpdated": last_updated}},
+                    upsert=True,
+                ))
+                updated_uids.add(uid)
+            continue
+
+        # Check for exact matches across all fields
+        exact_matches = []
+        for db_record in candidate_matches:
+            is_exact = all(
+                normalize_value(original_row.get(csv_key)) == normalize_value(db_record.get(db_key))
+                for csv_key, db_key in FIELD_MAP.items()
+            )
+            if is_exact:
+                exact_matches.append(db_record)
+
+        if exact_matches:
+            # Exact match found - schedule for deletion
+            ids = [doc["_id"] for doc in exact_matches]
+            for doc_id in ids:
+                delete_ops.append(DeleteOne({"_id": doc_id}))
+                lease_ids_to_cascade.append(doc_id)
+            delete_count += len(exact_matches)
+
+            # Schedule LeaseTracker update
+            if last_updated and uid not in updated_uids:
+                lease_tracker_ops.append(UpdateOne(
+                    {"uid": uid},
+                    {"$set": {"lastUpdated": last_updated}},
+                    upsert=True,
+                ))
+                updated_uids.add(uid)
+            continue
+
+        # No exact match - check character differences
+        char_diff_details = []
+        for record in candidate_matches:
+            total_char_diffs, diff_details = calculate_char_differences(original_row, record)
+            if diff_details:
+                char_diff_details.append({
+                    "_id": record["_id"],
+                    "total_diffs": total_char_diffs,
+                    "details": diff_details,
+                })
+
+        # If only 1 character difference total, treat as exact match
+        total_char_diffs = sum(detail["total_diffs"] for detail in char_diff_details)
+        if total_char_diffs == 1:
+            ids = [doc["_id"] for doc in candidate_matches]
+            for doc_id in ids:
+                delete_ops.append(DeleteOne({"_id": doc_id}))
+                lease_ids_to_cascade.append(doc_id)
+            delete_count += len(candidate_matches)
+
+            # Schedule LeaseTracker update
+            if last_updated and uid not in updated_uids:
+                lease_tracker_ops.append(UpdateOne(
+                    {"uid": uid},
+                    {"$set": {"lastUpdated": last_updated}},
+                    upsert=True,
+                ))
+                updated_uids.add(uid)
+            continue
+
+        # Ambiguous case - store for later user interaction
+        ambiguous_cases.append({
+            "original_row": original_row,
+            "mapped_row": mapped_row,
+            "candidate_matches": candidate_matches,
+            "char_diff_details": char_diff_details,
+            "total_char_diffs": total_char_diffs,
+        })
+
+    # Handle ambiguous cases with user interaction (if any)
+    for case in ambiguous_cases:
+        uid = case["mapped_row"]["uid"]
+        logger.warning(f"⚠️ Ambiguous deletion for UID {uid} — no exact match:")
+        for detail in case["char_diff_details"]:
+            logger.warning(f"   ⚠️ _id: {detail['_id']}")
+            for diff in detail["details"]:
+                logger.warning(
+                    f"      🔸 {diff['field']}: \"{diff['csv_val']}\" ≠ \"{diff['db_val']}\" "
+                    f"(char diff: {diff['char_diff']})"
+                )
+        logger.warning(f"   🔢 Total character differences: {case['total_char_diffs']}")
+
+        choice = prompt_user("❓ [k]eep DB, [d]elete anyway, [s]kip? (k/d/s): ")
+
+        if choice == "d":
+            ids = [doc["_id"] for doc in case["candidate_matches"]]
+            for doc_id in ids:
+                delete_ops.append(DeleteOne({"_id": doc_id}))
+                lease_ids_to_cascade.append(doc_id)
+            delete_count += len(case["candidate_matches"])
+
+            # Schedule LeaseTracker update
+            if last_updated and uid not in updated_uids:
+                lease_tracker_ops.append(UpdateOne(
+                    {"uid": uid},
+                    {"$set": {"lastUpdated": last_updated}},
+                    upsert=True,
+                ))
+                updated_uids.add(uid)
+        else:
+            unknown_count += 1
+
+    # Execute batch delete operations
+    if delete_ops and not dry_run:
+        try:
+            collection.bulk_write(delete_ops, ordered=False)
+            if DEBUG:
+                logger.debug(f"✅ Batch deleted {len(delete_ops)} record(s)")
+        except BulkWriteError as e:
+            logger.warning(f"⚠️ Bulk delete error: {e.details}")
+            # Count successful deletes
+            delete_count -= len(e.details.get("writeErrors", []))
+
+    # Execute batch LeaseTracker updates
+    if lease_tracker_ops and not dry_run:
+        try:
+            lease_tracker_collection.bulk_write(lease_tracker_ops, ordered=False)
+        except BulkWriteError as e:
+            logger.warning(f"⚠️ LeaseTracker bulk update error: {e.details}")
+
+    # Cascade delete from leasesext (in batch)
+    ext_delete_count = 0
+    if lease_ids_to_cascade:
+        ext_delete_count = cascade_delete_leasesext(
+            lease_ids_to_cascade,
+            leasesext_collection,
+            dry_run
+        )
+
     return delete_count, ext_delete_count, unknown_count
 
 
@@ -1075,6 +1150,9 @@ def process_changes(
                 )
 
     except Exception as e:
+        import traceback
+        traceback_str = traceback.format_exc()
+        logger.error(f"❌ Exception occurred:\n{traceback_str}")
         logger.error(f"❌ Error processing changes: {e}")
         raise
 
