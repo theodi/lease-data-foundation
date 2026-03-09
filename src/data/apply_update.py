@@ -356,9 +356,9 @@ def map_to_addressbase(
             # Create document in the format expected by parse_and_prepare_records
             doc = {
                 "uid": mapped_row["uid"],
-                "apd": mapped_row["apd"],
-                "pc": mapped_row["pc"],
-                "uprn": mapped_row["uprn"]
+                "apd": mapped_row.get("apd", ""),
+                "pc": mapped_row.get("pc", ""),
+                "uprn": mapped_row.get("uprn", "")
             }
             batch.append(doc)
 
@@ -426,6 +426,8 @@ def map_to_addressbase(
         logger.info(f"📊 AddressBase mapping: {mapped_count}/{total_records} records enriched ({mapped_percentage:.2f}%)")
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         logger.error(f"❌ Error during AddressBase mapping: {e}")
         logger.warning("⚠️ Continuing without AddressBase enrichment for remaining records")
     finally:
@@ -624,8 +626,8 @@ def process_delete_batch(
 
     for original_row, mapped_row in zip(batch_rows, mapped_rows):
         uid = mapped_row["uid"]
-        ro = str(mapped_row["ro"])
-        apid = str(mapped_row["apid"])
+        ro = str(mapped_row.get("ro", ""))
+        apid = str(mapped_row.get("apid", ""))
 
         # Get records for this UID
         db_matches = uid_to_records.get(uid, [])
