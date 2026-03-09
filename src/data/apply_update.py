@@ -18,6 +18,7 @@ from typing import Optional, Dict, List, Any, Set
 from dotenv import load_dotenv
 from pymongo import InsertOne, UpdateOne, DeleteOne
 from pymongo.errors import BulkWriteError
+from bson import ObjectId
 from tqdm import tqdm
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -783,7 +784,7 @@ def process_delete_batch(
 
 
 def process_bulk_additions(
-    add_rows: List[Dict[str, str]],
+    add_rows: List[Dict[str, Any]],
     enriched_records: List[Dict[str, Any]],
     collection,
     lease_tracker_collection,
@@ -836,7 +837,12 @@ def process_bulk_additions(
         enriched_record = enriched_records[idx]
         # Process only if we are sure it is not commercial (based on AddressBase class)
         if enriched_record.get("cl", "R") in RESIDENTIAL_CLASSES:
+            # Pre-generate the _id
+            lease_id = ObjectId()
+            mapped_row["_id"] = lease_id
+
             batch.append(InsertOne(mapped_row))
+            enriched_record["lid"] = lease_id
             enriched_batch.append(enriched_record)
 
             # Prepare LeaseTracker upserts for unique UIDs
@@ -858,27 +864,14 @@ def process_bulk_additions(
                 batch_count += len(batch)
                 logger.info(f"📊 Bulk added {batch_count} records so far...")
 
-                # Get inserted IDs and add to leasesext
-                inserted_ids = result.bulk_api_result.get("inserted")
-                # Prepare leasesext batch with lid references
-                leasesext_batch = []
-                for i, inserted_id in enumerate(inserted_ids):
-                    enriched_record = enriched_batch[i]
-                    enriched_record["lid"] = inserted_id
-                    leasesext_batch.append(InsertOne(enriched_record))
-
                 # Insert to leasesext collection
-                leasesext_collection.bulk_write(leasesext_batch, ordered=False)
-                logger.info(f"📊 Added {len(leasesext_batch)} enriched records to leasesext")
-
+                if enriched_batch:
+                    leasesext_batch = [InsertOne(record) for record in enriched_batch]
+                    leasesext_collection.bulk_write(leasesext_batch, ordered=False)
+                    logger.info(f"📊 Added {len(leasesext_batch)} enriched records to leasesext")
             except BulkWriteError as e:
                 logger.warning(f"Bulk write error: {e.details}")
                 batch_count += len(batch) - len(e.details.get("writeErrors", []))
-
-                # Handle partial success for leasesext
-                inserted_ids = e.details.get("nInserted", 0)
-                if inserted_ids > 0:
-                    logger.warning(f"⚠️ Partial insert: {inserted_ids} records inserted, some failed")
 
             batch = []
             enriched_batch = []
@@ -889,30 +882,16 @@ def process_bulk_additions(
             # Insert to main collection and get result
             result = collection.bulk_write(batch, ordered=False)
             batch_count += len(batch)
-            logger.info(f"📊 Bulk added {batch_count} records in total.")
-
-            # Get inserted IDs and add to leasesext
-            inserted_ids = result.bulk_api_result.get("inserted")
-            # Prepare leasesext batch with lid references
-            leasesext_batch = []
-            for i, inserted_id in enumerate(inserted_ids):
-                enriched_record = enriched_batch[i].copy() if enriched_batch[i] else {}
-                enriched_record["lid"] = inserted_id
-                leasesext_batch.append(InsertOne(enriched_record))
+            # logger.info(f"📊 Bulk added {batch_count} records in total.")
 
             # Insert to leasesext collection
-            if leasesext_batch:
+            if enriched_batch:
+                leasesext_batch = [InsertOne(record) for record in enriched_batch]
                 leasesext_collection.bulk_write(leasesext_batch, ordered=False)
-                logger.info(f"📊 Added {len(leasesext_batch)} enriched records to leasesext")
-
+                # logger.info(f"📊 Added {len(leasesext_batch)} enriched records to leasesext")
         except BulkWriteError as e:
             logger.warning(f"Bulk write error: {e.details}")
             batch_count += len(batch) - len(e.details.get("writeErrors", []))
-
-            # Handle partial success for leasesext
-            inserted_ids = e.details.get("nInserted", 0)
-            if inserted_ids > 0:
-                logger.warning(f"⚠️ Partial insert: {inserted_ids} records inserted, some failed")
 
     # Update LeaseTracker
     if lease_tracker_ops:

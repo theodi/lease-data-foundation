@@ -4,6 +4,22 @@
 
 The `apply_update.py` script processes lease data change files (CSV format) and applies additions and deletions to the MongoDB lease database. It supports dry-run mode for safe testing before making actual database changes.
 
+Connect to the server
+```
+su root
+cd lease-data-foundation/
+source .venv/bin/activate
+
+# Check for updates (downloads change files from GOV.UK API and saves to lease_data/)
+python -m src.data.check_for_updates
+
+# Apply changes in dry-run mode (no database changes)
+python -m src.data.apply_update lease_data/LEASES_COU_CHANGES_2026_03.csv
+
+# Apply changes if all looks good
+python -m src.data.apply_update lease_data/LEASES_COU_CHANGES_2026_03.csv --apply
+```
+
 ## Usage
 
 ### Basic Syntax

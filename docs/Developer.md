@@ -64,7 +64,7 @@ lid -> asc (1)
 
 In terminal:
 ```bash
-mongoimport --uri="mongodb+srv://<user>:<password>@luster0.dearuu.mongodb.net/leases" \
+mongoimport --uri="mongodb+srv://<user>:<password>@{SERVER}/leases" \
             --collection=leases \
             --file="path/to/your_exported_file.json" \
             --jsonArray \
@@ -74,7 +74,7 @@ mongoimport --uri="mongodb+srv://<user>:<password>@luster0.dearuu.mongodb.net/le
 or  if bson export (mongodump) is used (folder structure should be like: `./local_dump_24022026/leases/leases.bson`):
 
 ```
-mongorestore --uri="mongodb+srv://<user>:<password>@cluster0.dearuu.mongodb.net" \
+mongorestore --uri="mongodb+srv://<user>:<password>@{SERVER}" \
             --nsInclude="leases.leases" \
             --drop \
             ./local_dump_24022026

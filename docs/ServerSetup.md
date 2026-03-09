@@ -121,7 +121,7 @@ postgresql://lease_admin:YOUR_PASSWORD@localhost:5432/lease_data
    - Password: (from `docker-compose.env` POSTGRES_PASSWORD)
 
 ### Jupyter Notebook
-- **URL:** http://localhost:8888 (or http://SERVER_IP:8888)
+- **URL:** http://SERVER_IP:8888/lab?token=YOUR_JUPYTER_TOKEN 
 - **Token:** From `docker-compose.env` file (`JUPYTER_TOKEN`)
 
 **First access:**
