@@ -98,7 +98,7 @@ def extract_postcode(row: Dict[str, str]) -> Optional[str]:
     return None
 
 
-def map_row(original_row: Dict[str, str]) -> Dict[str, str]:
+def map_row(original_row: Dict[str, str]) -> Dict[str, Any]:
     """
     Map CSV row to MongoDB document format.
 
@@ -110,10 +110,19 @@ def map_row(original_row: Dict[str, str]) -> Dict[str, str]:
     """
     mapped_row = {}
     for csv_key, db_key in FIELD_MAP.items():
-        mapped_row[db_key] = str(original_row.get(csv_key, "")).strip()
+        value = original_row.get(csv_key, "")
+        if isinstance(value, str):
+            value = value.strip()
+            if value == "":
+                continue
+            if db_key in ['uprn', 'ro', 'ppd', 'apid'] and value.isdigit():
+                value = int(value)
+        mapped_row[db_key] = value
 
     # Add extracted postcode
-    mapped_row["pc"] = extract_postcode(original_row)
+    postcode = extract_postcode(original_row)
+    if postcode:
+        mapped_row["pc"] = postcode
 
     return mapped_row
 
@@ -370,7 +379,7 @@ def map_to_addressbase(
             if uid:
                 # Extract relevant AddressBase fields
                 ab_data = {
-                    "aup": rec.get("uprn"),
+                    "aup": int(rec.get("uprn")) if rec.get("uprn") and str(rec.get("uprn")).isdigit() else rec.get("uprn"),
                     "bn": rec.get("building_number"),
                     "bnam": str(rec.get("building_name")).strip(),
                     "tf": str(rec.get("thoroughfare")).strip(),
@@ -615,8 +624,8 @@ def process_delete_batch(
 
     for original_row, mapped_row in zip(batch_rows, mapped_rows):
         uid = mapped_row["uid"]
-        ro = mapped_row["ro"]
-        apid = mapped_row["apid"]
+        ro = str(mapped_row["ro"])
+        apid = str(mapped_row["apid"])
 
         # Get records for this UID
         db_matches = uid_to_records.get(uid, [])
@@ -862,13 +871,13 @@ def process_bulk_additions(
                 # Insert to main collection and get result
                 result = collection.bulk_write(batch, ordered=False)
                 batch_count += len(batch)
-                logger.info(f"📊 Bulk added {batch_count} records so far...")
+                # logger.info(f"📊 Bulk added {batch_count} records so far...")
 
                 # Insert to leasesext collection
                 if enriched_batch:
                     leasesext_batch = [InsertOne(record) for record in enriched_batch]
                     leasesext_collection.bulk_write(leasesext_batch, ordered=False)
-                    logger.info(f"📊 Added {len(leasesext_batch)} enriched records to leasesext")
+                    # logger.info(f"📊 Added {len(leasesext_batch)} enriched records to leasesext")
             except BulkWriteError as e:
                 logger.warning(f"Bulk write error: {e.details}")
                 batch_count += len(batch) - len(e.details.get("writeErrors", []))
