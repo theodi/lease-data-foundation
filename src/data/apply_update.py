@@ -1075,8 +1075,8 @@ def process_changes(
         with client:
             collection = client.get_collection(collection_name)
             leasesext_collection = client.get_collection(collection_ext_name)
-            lease_tracker_collection = client.get_collection("lease_tracker")
-            lease_update_log_collection = client.get_collection("lease_update_log")
+            lease_tracker_collection = client.get_collection("leasetrackers")
+            lease_update_log_collection = client.get_collection("leaseupdatelogs")
 
             logger.info(f"📦 Connected to database: {database_name}.{collection_name}")
 
