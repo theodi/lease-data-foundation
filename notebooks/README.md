@@ -31,6 +31,7 @@ This directory contains Jupyter notebooks for analyzing UK leasehold property da
 **Collections**: 
 - `leases` - Original lease documents from HMLR data
 - `leasesext` - Extended/enriched lease documents with location and expiry data (use for geospatial analysis)
+- `leaseviewstats` - User search/view statistics per lease (use for search behavior analysis)
 
 **Default URI**: see `.env` file in the project root (parent directory of `notebooks/`)
 
@@ -338,6 +339,151 @@ Each district feature contains:
 
 **Use as template for**: Date/time analysis, percentage calculations, heat maps, multi-criteria analysis
 
+### 3. `short_lease_search_analysis.ipynb`
+
+**Purpose**: Analyze geographic distribution of user searches for short lease properties
+
+**Data Source**: Uses `leaseviewstats` and `leasesext` collections:
+- `leaseviewstats` - User search/view statistics per lease
+- `leasesext` - Lease data with location and expiry information
+
+**Key Operations**:
+- Joining view stats with lease data via `uid`/`uniqueId`
+- Filtering for short leases (< 80 years remaining)
+- Geographic aggregation by district
+- Ranking districts by total search views
+- Bar chart visualization
+
+**Use as template for**: User behavior analysis, search pattern analysis, geographic demand analysis
+
+### 4. `search_correlation.ipynb`
+
+**Purpose**: Analyze correlation between lease term length and user search interest
+
+**Data Source**: Uses `leaseviewstats` and `leasesext` collections
+
+**Key Operations**:
+- Statistical correlation analysis (Spearman/Pearson)
+- Categorizing leases by remaining years (Critical/Approaching/Near threshold/Moderate/Long)
+- Scatter plots with regression lines
+- Box plots by category
+- Mean views by year bucket analysis
+
+**Use as template for**: Correlation analysis, statistical testing, behavioral insights
+
+---
+
+## User Search Data Analysis
+
+### Overview
+
+User search data enables analysis of market interest and demand patterns. The `leaseviewstats` collection tracks how often each lease property has been viewed/searched by users.
+
+### `leaseviewstats` Collection Schema
+
+| Field | Type | Description | Example |
+|-------|------|-------------|---------|
+| `_id` | ObjectId | Unique MongoDB identifier | `ObjectId("...")` |
+| `uniqueId` | String | Unique lease identifier (matches `leasesext.uid`) | `"BF8C40AD7B8747ECE10F51EB9D1C44831DA74058"` |
+| `viewCount` | Integer | Number of times the lease has been viewed | `15` |
+
+### Common Search Analysis Patterns
+
+#### Pattern 1: Geographic Demand Analysis
+
+**Question**: "Which areas have the most search interest for short leases?"
+
+**Steps**:
+1. Fetch view statistics from `leaseviewstats`
+2. Join with `leasesext` using `uid`/`uniqueId`
+3. Filter for short leases (< 80 years remaining)
+4. Match locations to districts
+5. Aggregate total views by district
+6. Rank and visualize
+
+**Code Pattern**:
+```python
+# Fetch view stats
+view_stats = list(collection_views.find({}, {"uniqueId": 1, "viewCount": 1}))
+uid_to_views = {v['uniqueId']: v['viewCount'] for v in view_stats}
+
+# Query leases with view data
+query = {
+    "uid": {"$in": list(uid_to_views.keys())},
+    "loc": {"$exists": True, "$ne": None},
+    "exp": {"$exists": True, "$ne": None}
+}
+
+for doc in collection_ext.find(query):
+    uid = doc['uid']
+    view_count = uid_to_views.get(uid, 0)
+    # Process and aggregate by district
+```
+
+#### Pattern 2: Search-Lease Correlation
+
+**Question**: "Is there a correlation between lease length and search interest?"
+
+**Steps**:
+1. Join view stats with lease expiry data
+2. Calculate years remaining for each lease
+3. Compute correlation coefficient (Spearman recommended for non-linear)
+4. Categorize by lease length buckets
+5. Visualize with scatter plots and box plots
+
+**Code Pattern**:
+```python
+from scipy import stats
+
+# Calculate correlation
+correlation, p_value = stats.spearmanr(years_remaining, view_counts)
+
+# Categorize leases
+def categorize(years):
+    if years < 70: return 'Critical (<70 years)'
+    elif years < 80: return 'Approaching (70-80 years)'
+    elif years < 90: return 'Near threshold (80-90 years)'
+    elif years < 100: return 'Moderate (90-100 years)'
+    else: return 'Long (100+ years)'
+
+df['category'] = df['years_remaining'].apply(categorize)
+```
+
+#### Pattern 3: Time-Bucket Analysis
+
+**Question**: "How does average search interest vary across lease length ranges?"
+
+**Steps**:
+1. Create year buckets (e.g., 10-year intervals)
+2. Calculate mean view count per bucket
+3. Visualize with bar chart
+4. Identify threshold effects (e.g., 80-year mortgage boundary)
+
+**Code Pattern**:
+```python
+# Create 10-year buckets
+df['year_bucket'] = pd.cut(df['years_remaining'], bins=range(0, 200, 10), right=False)
+bucket_stats = df.groupby('year_bucket')['view_count'].agg(['mean', 'count'])
+
+# Filter for statistical significance
+bucket_stats = bucket_stats[bucket_stats['count'] >= 10]
+```
+
+### Key Insights from Search Analysis
+
+1. **80-Year Threshold Effect**: Properties approaching the 80-year mortgage threshold often show increased search interest as owners/buyers investigate extension options
+
+2. **Geographic Hotspots**: Areas like London boroughs and major cities typically show higher search volumes for short leases
+
+3. **Negative Correlation**: Generally, shorter remaining lease terms correlate with higher search interest (buyers researching problematic leases)
+
+### Best Practices for Search Analysis
+
+- **Filter by significance**: Only analyze buckets with sufficient sample sizes (≥10 records)
+- **Use appropriate correlation**: Spearman for non-linear relationships
+- **Control for geography**: Consider geographic factors when interpreting patterns
+- **Document thresholds**: Clearly state the short lease threshold used (typically 80 years)
+
 ---
 
 ## Common Analysis Patterns
@@ -600,7 +746,9 @@ See example notebooks for bar chart and histogram implementations.
 4. **Choose Template**: 
    - Simple counting → `district_leasehold_counts.ipynb`
    - Date analysis → `lease_expiry_heatmap.ipynb`
-   - Both → `lease_expiry_heatmap.ipynb`
+   - Search/demand analysis → `short_lease_search_analysis.ipynb`
+   - Correlation analysis → `search_correlation.ipynb`
+   - Combined geographic + temporal → `lease_expiry_heatmap.ipynb`
 
 5. **Implement**:
    - Follow standard notebook structure
@@ -629,6 +777,23 @@ See example notebooks for bar chart and histogram implementations.
 
 **"Leases under 80 years in North West?"**
 - Filter by region, filter by expiry threshold using `exp`, visualize results
+
+**"Which areas have highest search demand for short leases?"**
+- Use `short_lease_search_analysis.ipynb` template
+- Join `leaseviewstats` with `leasesext` via `uid`/`uniqueId`
+- Filter leases with < 80 years remaining
+- Aggregate views by district, rank and visualize
+
+**"Is there correlation between lease length and search interest?"**
+- Use `search_correlation.ipynb` template
+- Join view stats with expiry data
+- Calculate Spearman correlation coefficient
+- Visualize with scatter plots and category analysis
+
+**"Which lease categories get the most user attention?"**
+- Categorize by years remaining (Critical/Approaching/Near threshold/Moderate/Long)
+- Compare mean view counts across categories
+- Use box plots to show distribution
 
 ---
 
