@@ -72,6 +72,11 @@ Protect the environment file:
 chmod 600 docker-compose.env
 ```
 
+Jupyter will read this file to read environment variables for the notebook service. Give read permissions to the notebook service while keeping it secure:
+```bash
+chmod 644 .env
+```
+
 ### 5. Start Services
 
 ```bash
@@ -88,6 +93,14 @@ View logs:
 
 ```bash
 docker compose logs -f
+```
+
+### 6. Stop services:
+
+Be careful not to delete volumes (`-v`) when stopping services to preserve AddressBase data.
+
+```bash
+docker compose down
 ```
 
 ## Accessing Services
