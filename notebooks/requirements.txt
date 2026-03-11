@@ -11,3 +11,5 @@ pyproj>=3.6.0
 rtree>=1.1.0
 tqdm>=4.66.0
 geopandas>=0.14.0
+seaborn>=0.13.2
+scipy>=1.17.1
