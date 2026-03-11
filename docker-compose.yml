@@ -66,6 +66,7 @@ services:
       - ./src:/home/jovyan/src:ro
       - ./data:/home/jovyan/data
       - ./lease_data:/home/jovyan/lease_data:ro
+      - ./.env:/home/jovyan/.env:ro
     ports:
       - "${JUPYTER_PORT:-8888}:8888"
     networks:

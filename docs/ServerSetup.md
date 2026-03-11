@@ -137,3 +137,11 @@ postgresql://USER:YOUR_PASSWORD@localhost:5432/lease_data
   - `src/` → `/home/jovyan/src` (read-only access to your source code)
   - `data/` → `/home/jovyan/data` (read-write access to data files)
   - `lease_data/` → `/home/jovyan/lease_data` (read-only access to lease data)
+
+## Maintenance
+
+If pulling changes from GitHub repository and local modifications exist, ensure to discard them (such as notebooks).
+
+```bash
+git restore file1 file2
+```
