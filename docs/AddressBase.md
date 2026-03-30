@@ -1,5 +1,9 @@
 # AddressBase Explained
 
+AddressBase is a comprehensive dataset of UK addresses maintained by Ordnance Survey. It provides detailed information about every addressable location in the country, including geographic coordinates, property classifications, and unique identifiers. This dataset is essential for geocoding, address validation, and spatial analysis.
+
+Here are the key fields and their descriptions:
+
 ### 🔑 Identifiers
 
 **UPRN (Unique Property Reference Number)**

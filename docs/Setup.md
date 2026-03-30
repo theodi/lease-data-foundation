@@ -1,4 +1,6 @@
-# Setup Guide
+# Local Environment Setup Guide
+
+This guide provides instructions for setting up the local development environment for the AddressBase integration and data enrichment pipeline. See [Server Setup Guide](docs/ServerSetup.md) for production environment setup using Docker Compose.
 
 ## AddressBase Setup Guide
 Download the installer from [EnterpriseDB](https://www.enterprisedb.com/downloads/postgres-postgresql-downloads). 
