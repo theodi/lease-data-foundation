@@ -163,6 +163,8 @@ python -m src.addressbase.load_data
 
 ### Ensure Mongo Indexes
 
+Mongo search indexes must be set up in MongoDB Atlas to support the application's search functionality. Also, field indexes should be created for optimal query performance.
+
 #### Set Up Search Indexes in MongoDB Atlas
 
 The application requires three search indexes for optimal performance:
