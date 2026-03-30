@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, List, Any, Set
@@ -21,6 +22,7 @@ from pymongo.errors import BulkWriteError
 from bson import ObjectId
 from tqdm import tqdm
 import psycopg2
+import requests
 from psycopg2.extras import RealDictCursor
 
 from src.addressbase.match_addresses import (
@@ -30,6 +32,7 @@ from src.addressbase.match_addresses import (
 from src.utils.mongo_client import MongoDBClient
 from src.main_regex_extractor import process_record as regex_process_record
 from src.main_t5_extractor import initialize_t5_extractor
+from src.enricher.update_mongo_from_csv import bulk_lookup_postcodes
 
 # Load environment variables
 load_dotenv()
@@ -56,6 +59,10 @@ PG_CONFIG = {
 
 # Residential classification codes
 RESIDENTIAL_CLASSES = {"R", "X", "P"}
+
+# Postcodes.io API configuration
+POSTCODES_IO_BATCH_SIZE = 100
+POSTCODES_IO_RATE_LIMIT_DELAY = 0.05
 
 # Field mapping from CSV to MongoDB short keys
 FIELD_MAP = {
@@ -174,7 +181,7 @@ def prompt_user(question: str) -> str:
     return input(question).strip().lower()
 
 
-def process_enrichment(add_rows: List[Dict[str, str]]) -> tuple[list[dict[str, Any] | None], int, int]:
+def process_enrichment(add_rows: List[Dict[str, str]]) -> tuple[list[dict[str, Any] | None], int, int, int, float]:
     """
     Enrich records with extracted lease term data using regex and T5.
 
@@ -185,10 +192,10 @@ def process_enrichment(add_rows: List[Dict[str, str]]) -> tuple[list[dict[str, A
         add_rows: List of CSV row dictionaries to enrich
 
     Returns:
-        List of enriched dictionaries (same length and order as add_rows), percentage of valid term_parsings, percentage of successful AddressBase mappings
+        List of enriched dictionaries (same length and order as add_rows), percentage of valid term_parsings, percentage of successful AddressBase mappings, percentage of postcodes.io location enrichments
     """
     if not add_rows:
-        return [], 0, 0
+        return [], 0, 0, 0, 0.0
 
     total_records = len(add_rows)
     logger.info(f"📊 Enriching {total_records} records...")
@@ -199,6 +206,7 @@ def process_enrichment(add_rows: List[Dict[str, str]]) -> tuple[list[dict[str, A
     # Term string processing with regex and T5
     terms_processed_percentage = process_term_string(add_rows, enriched_records, total_records)
     mapped_records_percentage = map_to_addressbase(add_rows, enriched_records, total_records)
+    postcode_enrichment_percentage = postcode_enrich_locations(add_rows, enriched_records, total_records)
 
     # Fill any remaining None entries (shouldn't happen, but safety check)
     for idx in range(total_records):
@@ -207,7 +215,12 @@ def process_enrichment(add_rows: List[Dict[str, str]]) -> tuple[list[dict[str, A
             mapped_row = map_row(original_row)
             enriched_records[idx] = {"uid": mapped_row["uid"]}
 
-    return enriched_records, terms_processed_percentage, mapped_records_percentage
+    # Compute overall loc (GeoJSON Point) coverage across all enriched records
+    loc_count = sum(1 for r in enriched_records if r and r.get("loc"))
+    loc_coverage_percentage = (loc_count / total_records * 100) if total_records > 0 else 0.0
+    logger.info(f"📍 Location (loc) coverage: {loc_count}/{total_records} records have a loc value ({loc_coverage_percentage:.2f}%)")
+
+    return enriched_records, terms_processed_percentage, mapped_records_percentage, postcode_enrichment_percentage, loc_coverage_percentage
 
 
 def process_term_string(add_rows: list[dict[str, str]], enriched_records: list[dict[str, Any] | None],
@@ -435,6 +448,91 @@ def map_to_addressbase(
         pg_conn.close()
 
     return mapped_percentage
+
+
+def postcode_enrich_locations(
+    add_rows: List[Dict[str, str]],
+    enriched_records: List[Optional[Dict[str, Any]]],
+    total_records: int,
+) -> int:
+    """
+    Enrich records with lat/lon/loc from postcodes.io API for records that
+    have a postcode but no existing latitude/longitude.
+
+    Args:
+        add_rows: Original CSV rows used to extract the postcode
+        enriched_records: List of enriched records (modified in place)
+        total_records: Total number of records
+
+    Returns:
+        Percentage of eligible records successfully enriched
+    """
+    if not enriched_records:
+        return 0
+
+    logger.info("📍 Enriching locations via postcodes.io API...")
+
+    # Collect records that need enrichment: have 'pc' in original row but no 'lat'/'lon' in enriched record
+    eligible_indices: List[int] = []
+    postcodes_to_lookup: List[str] = []
+
+    for idx in range(total_records):
+        record = enriched_records[idx]
+        if record is None:
+            continue
+        pc = map_row(add_rows[idx]).get("pc")
+        if pc and not record.get("lat") and not record.get("lon"):
+            eligible_indices.append(idx)
+            postcodes_to_lookup.append(str(pc).strip().upper())
+
+    if not eligible_indices:
+        logger.info("📍 No records eligible for postcodes.io enrichment (all already have lat/lon or no postcode)")
+        return 0
+
+    logger.info(f"📍 {len(eligible_indices)} records eligible for postcodes.io location enrichment")
+
+    # De-duplicate postcodes for API efficiency
+    unique_postcodes = list(set(postcodes_to_lookup))
+    postcode_results: Dict[str, Optional[Dict[str, Any]]] = {}
+
+    session = requests.Session()
+    try:
+        for i in range(0, len(unique_postcodes), POSTCODES_IO_BATCH_SIZE):
+            batch = unique_postcodes[i:i + POSTCODES_IO_BATCH_SIZE]
+            api_results = bulk_lookup_postcodes(batch, session)
+            postcode_results.update(api_results)
+
+            # Rate limit between batches
+            if i + POSTCODES_IO_BATCH_SIZE < len(unique_postcodes):
+                time.sleep(POSTCODES_IO_RATE_LIMIT_DELAY)
+    except Exception as e:
+        logger.error(f"❌ Error during postcodes.io enrichment: {e}")
+        logger.warning("⚠️ Continuing with partial postcodes.io enrichment")
+    finally:
+        session.close()
+
+    # Apply results to enriched records
+    enriched_count = 0
+    for idx, pc in zip(eligible_indices, postcodes_to_lookup):
+        result = postcode_results.get(pc)
+        if result and result.get("latitude") is not None and result.get("longitude") is not None:
+            lat = result["latitude"]
+            lon = result["longitude"]
+            enriched_records[idx]["lat"] = lat
+            enriched_records[idx]["lon"] = lon
+            enriched_records[idx]["loc"] = {
+                "type": "Point",
+                "coordinates": [float(lon), float(lat)],
+            }
+            enriched_count += 1
+
+    enriched_percentage = (enriched_count / len(eligible_indices) * 100) if eligible_indices else 0
+    logger.info(
+        f"📍 Postcodes.io enrichment: {enriched_count}/{len(eligible_indices)} "
+        f"eligible records enriched ({enriched_percentage:.2f}%)"
+    )
+
+    return enriched_percentage
 
 
 def cascade_delete_leasesext(
@@ -1006,6 +1104,8 @@ def print_summary(
     mapped_records_percentage: int,
     total_add_rows: int,
     commercial_count: int,
+    postcode_enrichment_percentage: int = 0,
+    loc_coverage_percentage: float = 0.0,
 ) -> None:
     """
     Print summary of operations.
@@ -1019,6 +1119,8 @@ def print_summary(
         mapped_records_percentage: Number of records mapped to AddressBase
         total_add_rows: Total number of add rows
         commercial_count: Number of commercial records skipped
+        postcode_enrichment_percentage: Percentage of postcodes.io location enrichments
+        loc_coverage_percentage: Percentage of enriched records with a loc (GeoJSON Point) value
     """
     logger.info("\n🔍 Summary:")
     logger.info(f" - Additions: {add_count}")
@@ -1028,6 +1130,8 @@ def print_summary(
     logger.info(f" - Skipped (bad columns): {skipped_count}")
     logger.info(f" - Term enrichment percentage: {parsed_valid_terms_percentage:.2f}")
     logger.info(f" - AddressBase mapping percentage: {mapped_records_percentage:.2f}")
+    logger.info(f" - Postcodes.io enrichment percentage: {postcode_enrichment_percentage:.2f}")
+    logger.info(f" - Location (loc) coverage percentage: {loc_coverage_percentage:.2f}")
 
 
 def process_changes(
@@ -1096,7 +1200,7 @@ def process_changes(
 
             # Enrich data
             logger.info("ENRICHING DATA" + (" (DRY-RUN)" if dry_run else ""))
-            enriched_records, parsed_valid_terms_percentage, mapped_records_percentage = process_enrichment(add_rows)
+            enriched_records, parsed_valid_terms_percentage, mapped_records_percentage, postcode_enrichment_percentage, loc_coverage_percentage = process_enrichment(add_rows)
             logger.info("ENRICHMENT COMPLETE")
 
             if write_enriched:
@@ -1124,7 +1228,9 @@ def process_changes(
                 parsed_valid_terms_percentage,
                 mapped_records_percentage,
                 len(add_rows),
-                commercial_count
+                commercial_count,
+                postcode_enrichment_percentage,
+                loc_coverage_percentage,
             )
 
             # Update database log
@@ -1155,6 +1261,8 @@ def process_changes(
         "skipped": skipped_count,
         "term_enrichment_percentage": parsed_valid_terms_percentage,
         "addressbase_mapping_percentage": mapped_records_percentage,
+        "postcode_enrichment_percentage": postcode_enrichment_percentage,
+        "loc_coverage_percentage": loc_coverage_percentage,
     }
 
 
