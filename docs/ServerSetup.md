@@ -202,6 +202,8 @@ The following field indexes should be created in MongoDB Atlas for the `leases` 
 
 ## Maintenance
 
+### Notebooks
+
 If pulling changes from GitHub repository and local modifications exist, ensure to discard them (such as notebooks).
 
 ```bash
