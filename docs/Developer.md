@@ -79,3 +79,38 @@ mongorestore --uri="mongodb+srv://<user>:<password>@{SERVER}" \
             --drop \
             ./local_dump_24022026
 ```
+
+### Set Up Search Indexes in MongoDB Atlas
+
+The application requires three search indexes for optimal performance:
+- `default`
+- `addr_autocomplete`
+- `postcode_autocomplete`
+
+These must be set up manually in **MongoDB Atlas**:
+
+1. Log in to your MongoDB Atlas account and navigate to your cluster.
+2. Go to the **"Search"** tab for your database.
+3. Click **"Create Search Index"**.
+4. For each index:
+   - Select the `leases` collection.
+   - Choose **"JSON Editor"** mode.
+   - Copy the JSON definition from the corresponding file in `data/atlas-search-indexes/` (`default.json`, `addr_autocomplete.json`, or `postcode_autocomplete.json`).
+   - Paste it into the editor and create the index.
+
+Repeat for all three indexes: `default`, `addr_autocomplete`, and `postcode_autocomplete`.
+
+### Create Field Indexes in MongoDB Atlas
+
+The following field indexes should be created in MongoDB Atlas for the `leases` collection to optimize query performance:
+
+- leasetermcaches
+    - Index: term
+- leaseviewstats
+    - Index: uniqueId
+- searchanalytics
+    - Index: type
+- userloginstats
+    - Index: period
+- users
+    - Index: guid, lastLogin, verificationCode.expiresAt, searchHistory.timestamp
