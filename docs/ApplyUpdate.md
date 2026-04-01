@@ -14,10 +14,10 @@ source .venv/bin/activate
 python -m src.data.check_for_updates
 
 # Apply changes in dry-run mode (no database changes)
-python -m src.data.apply_update lease_data/LEASES_COU_CHANGES_2026_03.csv
+python -m src.data.apply_update lease_data/LEASES_COU_2026_03.csv
 
 # Apply changes if all looks good
-python -m src.data.apply_update lease_data/LEASES_COU_CHANGES_2026_03.csv --apply
+python -m src.data.apply_update lease_data/LEASES_COU_2026_03.csv --apply
 ```
 
 ## Usage
