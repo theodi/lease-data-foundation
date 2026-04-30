@@ -97,6 +97,24 @@ Contains extended/enriched data with parsed dates, coordinates, and geospatial f
 
 ---
 
+#### `leaseviewstats` Collection Schema
+
+Tracks user search and view activity for each lease property. **Use this collection for search behavior and demand analysis.**
+
+| Field | Type | Description | Example |
+|-------|------|-------------|---------|
+| `_id` | ObjectId | Unique MongoDB identifier | `ObjectId("686ee84595e98e9040b2b7d9")` |
+| `uniqueId` | String | Foreign key referencing `leases.uid` (also matches `leasesext.uid`) | `"1608D08BFC5496E31C7926595EE2F1BE278ED436"` |
+| `viewCount` | Integer | Number of times the lease has been viewed | `107` |
+| `lastViewedAt` | Date | Timestamp of the most recent view | `ISODate("2025-12-10T12:40:26.755Z")` |
+| `__v` | Integer | Document version key (Mongoose) | `0` |
+
+**Relationships**: `leaseviewstats.uniqueId` → `leases.uid` (many-to-one)
+
+**Used by**: `search_correlation.ipynb`, `short_lease_search_analysis.ipynb`
+
+---
+
 #### Location Field Structure (`leasesext.loc`)
 
 The `loc` field in the `leasesext` collection is a GeoJSON Point object in WGS84 (EPSG:4326):
@@ -383,9 +401,13 @@ User search data enables analysis of market interest and demand patterns. The `l
 
 | Field | Type | Description | Example |
 |-------|------|-------------|---------|
-| `_id` | ObjectId | Unique MongoDB identifier | `ObjectId("...")` |
-| `uniqueId` | String | Unique lease identifier (matches `leasesext.uid`) | `"BF8C40AD7B8747ECE10F51EB9D1C44831DA74058"` |
-| `viewCount` | Integer | Number of times the lease has been viewed | `15` |
+| `_id` | ObjectId | Unique MongoDB identifier | `ObjectId("686ee84595e98e9040b2b7d9")` |
+| `uniqueId` | String | Foreign key referencing `leases.uid` (also matches `leasesext.uid`) | `"1608D08BFC5496E31C7926595EE2F1BE278ED436"` |
+| `viewCount` | Integer | Number of times the lease has been viewed | `107` |
+| `lastViewedAt` | Date | Timestamp of the most recent view | `2025-12-10T12:40:26.755Z` |
+| `__v` | Integer | Document version key (Mongoose) | `0` |
+
+**Relationships**: `leaseviewstats.uniqueId` → `leases.uid` (many-to-one)
 
 ### Common Search Analysis Patterns
 
