@@ -324,6 +324,18 @@ Each district feature contains:
 - `LAD24CD`: District code (unique identifier) - use for joins
 - `LAD24NM`: District name (human-readable) - use for display
 
+#### Region Properties
+
+Each region feature contains:
+- `eer18cd`: Region code (unique identifier) - use for joins
+- `eer18nm`: Region name (human-readable) - use for display
+
+#### Parish Properties
+
+Each parish feature contains:
+- `PARNCP25CD`: Parish code (unique identifier) - use for joins
+- `PARNCP25NM`: Parish name (human-readable) - use for display
+
 ---
 
 ## Example Notebooks
