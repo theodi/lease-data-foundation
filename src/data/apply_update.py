@@ -535,6 +535,45 @@ def postcode_enrich_locations(
     return enriched_percentage
 
 
+def filter_short_term_leases(
+    add_rows: List[Dict[str, str]],
+    enriched_records: List[Optional[Dict[str, Any]]],
+    min_tenure_years: int = 21,
+) -> tuple[List[Dict[str, str]], List[Optional[Dict[str, Any]]]]:
+    """
+    Remove short term leases (tenure years below the threshold) from the records.
+
+    Short term leases are identified using the enriched 'ty' (tenure_years) field.
+    Records without a usable 'ty' value are retained.
+
+    Args:
+        add_rows: Original CSV rows (kept in sync with enriched_records)
+        enriched_records: List of enriched records (parallel to add_rows)
+        min_tenure_years: Minimum tenure years required to keep a lease
+
+    Returns:
+        Tuple of (filtered_add_rows, filtered_enriched_records)
+    """
+    filtered_add_rows: List[Dict[str, str]] = []
+    filtered_enriched_records: List[Optional[Dict[str, Any]]] = []
+    deleted_count = 0
+
+    for original_row, record in zip(add_rows, enriched_records):
+        ty = record.get("ty") if record else None
+        if ty is not None and ty < min_tenure_years:
+            deleted_count += 1
+            continue
+        filtered_add_rows.append(original_row)
+        filtered_enriched_records.append(record)
+
+    logger.info(
+        f"🗑️ Deleted {deleted_count} short term lease(s) "
+        f"(tenure_years < {min_tenure_years})"
+    )
+
+    return filtered_add_rows, filtered_enriched_records
+
+
 def cascade_delete_leasesext(
     lease_ids: List[Any],
     leasesext_collection,
@@ -1202,6 +1241,9 @@ def process_changes(
             logger.info("ENRICHING DATA" + (" (DRY-RUN)" if dry_run else ""))
             enriched_records, parsed_valid_terms_percentage, mapped_records_percentage, postcode_enrichment_percentage, loc_coverage_percentage = process_enrichment(add_rows)
             logger.info("ENRICHMENT COMPLETE")
+
+            # Delete short term leases (tenure_years < 21) from the records.
+            add_rows, enriched_records = filter_short_term_leases(add_rows, enriched_records)
 
             if write_enriched:
                 output_csv_path = csv_path.parent / "enriched_results.csv"
